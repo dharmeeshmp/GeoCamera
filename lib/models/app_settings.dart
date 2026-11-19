@@ -22,6 +22,7 @@ class AppSettings extends ChangeNotifier {
   // Camera Settings
   bool _captureSound = true;
   bool _saveOriginal = false;
+  String _cameraGridMode = 'off';
 
   // Picture Settings
   String _mapType = 'Normal';
@@ -52,6 +53,7 @@ class AppSettings extends ChangeNotifier {
   StampTemplate get template => _template;
   bool get captureSound => _captureSound;
   bool get saveOriginal => _saveOriginal;
+  String get cameraGridMode => _cameraGridMode;
 
   String get mapType => _mapType;
   MapStyle get mapStyle => _mapStyle;
@@ -122,6 +124,7 @@ class AppSettings extends ChangeNotifier {
     StampTemplate? template,
     bool? captureSound,
     bool? saveOriginal,
+    String? cameraGridMode,
     String? mapType,
     MapStyle? mapStyle,
     String? customNote,
@@ -153,6 +156,7 @@ class AppSettings extends ChangeNotifier {
 
     if (captureSound != null) _captureSound = captureSound;
     if (saveOriginal != null) _saveOriginal = saveOriginal;
+    if (cameraGridMode != null) _cameraGridMode = cameraGridMode;
 
     if (mapType != null) {
       _mapType = mapType;
@@ -217,6 +221,7 @@ class AppSettings extends ChangeNotifier {
 
       settings._captureSound = prefs.getBool('capture_sound') ?? true;
       settings._saveOriginal = prefs.getBool('save_original') ?? false;
+      settings._cameraGridMode = prefs.getString('camera_grid_mode') ?? 'off';
 
       settings._mapType = prefs.getString('map_type') ?? 'Normal';
       final mapStyleIndex = prefs.getInt('map_style') ?? 0;
@@ -257,6 +262,7 @@ class AppSettings extends ChangeNotifier {
 
       await prefs.setBool('capture_sound', _captureSound);
       await prefs.setBool('save_original', _saveOriginal);
+      await prefs.setString('camera_grid_mode', _cameraGridMode);
 
       await prefs.setString('map_type', _mapType);
       await prefs.setInt('map_style', _mapStyle.index);

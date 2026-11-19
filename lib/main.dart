@@ -16,6 +16,7 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'models/ad_config.dart';
 import 'models/app_settings.dart';
@@ -24,6 +25,7 @@ import 'screens/permission_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/media_storage_service.dart';
 import 'services/review_service.dart';
+import 'widgets/camera_grid_overlay.dart';
 import 'widgets/geo_stamp_overlay.dart';
 
 void main() async {
@@ -81,8 +83,10 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   CameraController? _cameraController;
   int _selectedCameraIndex = 0;
   FlashMode _currentFlashMode = FlashMode.auto;
+  bool _isCameraInitialized = false;
   bool _isCameraReady = false;
   bool _isCameraInitializing = false;
+  bool _isSwitchingCamera = false;
   String? _cameraErrorMessage;
 
   // Zoom Capabilities & State
@@ -101,6 +105,9 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   bool _isProcessingCapture = false;
   int _recordDurationSeconds = 0;
   Timer? _recordTimer;
+
+  // Guidance Grid State
+  String _gridMode = 'off';
 
   // In-App Gallery Thumbnail State
   File? _latestMediaFile;
@@ -165,6 +172,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     widget.settings.addListener(_onSettingsChanged);
+    _loadGridMode();
     _initializeAll();
     _loadLatestThumbnail();
     _startClockTimer();
@@ -187,7 +195,36 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
 
   void _onSettingsChanged() {
     if (mounted) {
-      setState(() {});
+      setState(() {
+        _gridMode = widget.settings.cameraGridMode;
+      });
+    }
+  }
+
+  Future<void> _loadGridMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final mode =
+        prefs.getString('camera_grid_mode') ?? widget.settings.cameraGridMode;
+    if (mounted) {
+      setState(() {
+        _gridMode = mode;
+      });
+    }
+  }
+
+  Future<void> _cycleGridMode() async {
+    final nextMode = switch (_gridMode) {
+      'off' => '3x3',
+      '3x3' => '4x4',
+      _ => 'off',
+    };
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('camera_grid_mode', nextMode);
+    widget.settings.update(cameraGridMode: nextMode);
+    if (mounted) {
+      setState(() {
+        _gridMode = nextMode;
+      });
     }
   }
 
@@ -214,13 +251,14 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       if (_isRecordingVideo) {
         _stopVideoRecording(isEmergency: true);
       } else if (controller != null) {
-        controller.dispose();
-        _cameraController = null;
         if (mounted) {
           setState(() {
+            _cameraController = null;
+            _isCameraInitialized = false;
             _isCameraReady = false;
           });
         }
+        controller.dispose();
       }
     } else if (state == AppLifecycleState.resumed) {
       if (_cameraController == null ||
@@ -290,19 +328,38 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     }
   }
 
-  Future<void> _initCamera(CameraDescription description) async {
-    final prevController = _cameraController;
-    final newController = CameraController(
-      description,
-      ResolutionPreset.veryHigh,
-      enableAudio: true,
-      imageFormatGroup: ImageFormatGroup.jpeg,
-    );
+  Future<void> _initCamera(CameraDescription cameraDescription) async {
+    _isSwitchingCamera = true;
+    final oldController = _cameraController;
 
-    await prevController?.dispose();
+    if (mounted) {
+      setState(() {
+        _cameraController = null;
+        _isCameraInitialized = false;
+        _isCameraReady = false;
+      });
+    }
+
+    await oldController?.dispose();
 
     try {
-      await newController.initialize();
+      CameraController newController = CameraController(
+        cameraDescription,
+        ResolutionPreset.high,
+        enableAudio: true,
+      );
+
+      try {
+        await newController.initialize();
+      } on CameraException catch (_) {
+        await newController.dispose();
+        newController = CameraController(
+          cameraDescription,
+          ResolutionPreset.medium,
+          enableAudio: true,
+        );
+        await newController.initialize();
+      }
       await newController.setFlashMode(_currentFlashMode);
       try {
         await newController.setFocusMode(FocusMode.auto);
@@ -326,13 +383,15 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
         debugPrint('Error setting initial zoom level: $e');
       }
 
-      if (mounted) {
+      if (mounted && newController.value.isInitialized) {
         setState(() {
           _cameraController = newController;
           _minZoom = minZoom;
           _maxZoom = maxZoom;
           _currentZoom = currentZoom;
+          _isCameraInitialized = true;
           _isCameraReady = true;
+          _isSwitchingCamera = false;
           _isCameraInitializing = false;
           _cameraErrorMessage = null;
         });
@@ -342,6 +401,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       if (mounted) {
         setState(() {
           _isCameraInitializing = false;
+          _isSwitchingCamera = false;
           _cameraErrorMessage = 'Failed to start camera: $e';
         });
       }
@@ -349,10 +409,15 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   }
 
   Future<void> _toggleCamera() async {
-    if (_cameras.length < 2 || _cameraController == null) return;
+    if (_cameras.length < 2 || _isSwitchingCamera || _cameraController == null) {
+      return;
+    }
     _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras.length;
     await _initCamera(_cameras[_selectedCameraIndex]);
   }
+
+  /// Alias for camera switching
+  Future<void> _switchCamera() => _toggleCamera();
 
   Future<void> _cycleFlashMode() async {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
@@ -626,13 +691,16 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   // GOOGLE ADMOB ADAPTIVE BANNER
   // ==========================================
   Future<void> _loadAdaptiveBanner() async {
-    if (_bannerAd != null) return;
+    if (_bannerAd != null || !mounted) return;
 
-    final int width = MediaQuery.sizeOf(context).width.truncate();
-    final AdSize? adaptiveSize =
-        await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(width);
+    final size = MediaQuery.sizeOf(context);
+    final int adWidth = size.width.truncate();
+    final int maxAdHeight = (size.height * 0.12).round().clamp(60, 115);
 
-    if (adaptiveSize == null || !mounted) return;
+    final AdSize adaptiveSize = AdSize.getInlineAdaptiveBannerAdSize(
+      adWidth,
+      maxAdHeight,
+    );
 
     final banner = BannerAd(
       adUnitId: AdConfig.bannerAdUnitId,
@@ -924,6 +992,12 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     final now = DateTime.now();
     final liveFormattedDateTime = _getFormattedTimestamp(now);
 
+    final controller = _cameraController;
+    final bool canShowPreview = controller != null &&
+        !_isSwitchingCamera &&
+        _isCameraInitialized &&
+        controller.value.isInitialized;
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -932,20 +1006,15 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
           // ----------------------------------------------------
           // 1. FULL-SCREEN CAMERA PREVIEW (With Tap-to-Focus & Pinch-to-Zoom)
           // ----------------------------------------------------
-          if (_isCameraReady && _cameraController != null)
+          if (canShowPreview)
             Center(
               child: AspectRatio(
-                aspectRatio: 1 / _cameraController!.value.aspectRatio,
+                aspectRatio: 1 / controller.value.aspectRatio,
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     return GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onTapUp: (TapUpDetails details) async {
-                        if (_cameraController == null ||
-                            !_cameraController!.value.isInitialized) {
-                          return;
-                        }
-
                         final offset = Offset(
                           (details.localPosition.dx / constraints.maxWidth)
                               .clamp(0.0, 1.0),
@@ -954,8 +1023,8 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                         );
 
                         try {
-                          await _cameraController!.setFocusPoint(offset);
-                          await _cameraController!.setExposurePoint(offset);
+                          await controller.setFocusPoint(offset);
+                          await controller.setExposurePoint(offset);
                         } catch (e) {
                           debugPrint('Focus/Exposure point error: $e');
                         }
@@ -979,15 +1048,14 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                       },
                       onScaleUpdate: (ScaleUpdateDetails details) async {
                         if (details.scale != 1.0 &&
-                            _cameraController != null &&
-                            _cameraController!.value.isInitialized) {
+                            controller.value.isInitialized) {
                           final newZoom = (_baseZoom * details.scale)
                               .clamp(_minZoom, _maxZoom);
                           setState(() {
                             _currentZoom = newZoom;
                           });
                           try {
-                            await _cameraController!.setZoomLevel(newZoom);
+                            await controller.setZoomLevel(newZoom);
                           } catch (e) {
                             debugPrint('Zoom level error: $e');
                           }
@@ -996,7 +1064,10 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                       child: Stack(
                         fit: StackFit.expand,
                         children: [
-                          CameraPreview(_cameraController!),
+                          CameraPreview(controller),
+                          Positioned.fill(
+                            child: CameraGridOverlay(gridMode: _gridMode),
+                          ),
                           // 64x64 rounded focus square at tapped spot
                           if (_focusPoint != null)
                             Positioned(
@@ -1025,10 +1096,10 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
             )
           else
             Center(
-              child: _cameraErrorMessage != null
-                  ? Padding(
-                      padding: const EdgeInsets.all(24.0),
-                      child: Column(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 80.0),
+                child: _cameraErrorMessage != null
+                    ? Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           const Icon(Icons.error_outline,
@@ -1048,9 +1119,9 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                                 style: TextStyle(color: Colors.black)),
                           ),
                         ],
-                      ),
-                    )
-                  : const CircularProgressIndicator(color: Colors.amberAccent),
+                      )
+                    : const CircularProgressIndicator(color: Colors.amberAccent),
+              ),
             ),
 
           // ----------------------------------------------------
@@ -1137,6 +1208,16 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                             });
                           },
                         ),
+                        // Guidance Grid Toggle
+                        IconButton(
+                          icon: Icon(
+                            _gridMode != 'off' ? Icons.grid_on : Icons.grid_off,
+                            color: _gridMode != 'off'
+                                ? Colors.amberAccent
+                                : Colors.white,
+                          ),
+                          onPressed: _cycleGridMode,
+                        ),
                         // Camera Flip (Front/Back)
                         IconButton(
                           icon: const Icon(Icons.flip_camera_ios_rounded,
@@ -1147,14 +1228,15 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                         IconButton(
                           icon: const Icon(Icons.settings_outlined,
                               color: Colors.white),
-                          onPressed: () {
-                            Navigator.push(
+                          onPressed: () async {
+                            await Navigator.push(
                               context,
                               MaterialPageRoute(
                                 builder: (_) =>
                                     SettingsScreen(settings: widget.settings),
                               ),
                             );
+                            await _loadGridMode();
                           },
                         ),
                       ],
@@ -1176,7 +1258,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
               mainAxisSize: MainAxisSize.min,
               children: [
                 // Compact translucent quick-zoom pill bar (with 6px bottom margin)
-                if (_isCameraReady && _maxZoom > 1.0)
+                if (canShowPreview && _maxZoom > 1.0)
                   Builder(
                     builder: (context) {
                       final presets = [1.0, 2.0, 3.0, 5.0]
@@ -1202,7 +1284,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                                   _currentZoom = preset;
                                 });
                                 try {
-                                  await _cameraController!.setZoomLevel(preset);
+                                  await _cameraController?.setZoomLevel(preset);
                                 } catch (e) {
                                   debugPrint('Error setting zoom: $e');
                                 }
@@ -1460,7 +1542,11 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       bottomNavigationBar: SafeArea(
         top: false,
         child: SizedBox(
-          height: _bannerAd?.size.height.toDouble() ?? 60,
+          height: _bannerAd?.size.height.toDouble() ??
+              (MediaQuery.sizeOf(context).height * 0.12)
+                  .round()
+                  .clamp(60, 115)
+                  .toDouble(),
           width: double.infinity,
           child: (_isBannerLoaded && _bannerAd != null)
               ? AdWidget(ad: _bannerAd!)

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/ad_config.dart';
@@ -134,6 +135,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: 'Keep original photos without metadata',
                 value: s.saveOriginal,
                 onChanged: (v) => setState(() => s.update(saveOriginal: v)),
+              ),
+              _buildDivider(),
+              _buildActionTile(
+                icon: Icons.grid_on,
+                title: 'Camera Grid',
+                subtitle: _getGridModeSubtitle(s.cameraGridMode),
+                onTap: _showGridModeDialog,
               ),
             ],
           ),
@@ -583,6 +591,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ====================================================
   // MODAL DIALOGS
   // ====================================================
+
+  String _getGridModeSubtitle(String mode) {
+    switch (mode) {
+      case '3x3':
+        return '3×3 (Rule of Thirds)';
+      case '4x4':
+        return '4×4';
+      case 'off':
+      default:
+        return 'Off';
+    }
+  }
+
+  void _showGridModeDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text(
+            'Camera Grid',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildGridModeOption(ctx, 'off', 'Off', 'No grid lines on viewfinder'),
+              _buildGridModeOption(ctx, '3x3', '3×3 (Rule of Thirds)', 'Standard composition grid'),
+              _buildGridModeOption(ctx, '4x4', '4×4', 'Detailed alignment grid'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel', style: TextStyle(color: Colors.blue)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildGridModeOption(BuildContext ctx, String mode, String title, String desc) {
+    return RadioListTile<String>(
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(desc, style: const TextStyle(fontSize: 12)),
+      value: mode,
+      groupValue: widget.settings.cameraGridMode,
+      activeColor: Colors.blue,
+      onChanged: (val) async {
+        if (val != null) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('camera_grid_mode', val);
+          setState(() {
+            widget.settings.update(cameraGridMode: val);
+          });
+          if (ctx.mounted) {
+            Navigator.of(ctx).pop();
+          }
+        }
+      },
+    );
+  }
 
   void _showMapTypeDialog() {
     showDialog(

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:gal/gal.dart';
@@ -8,8 +9,12 @@ class MediaStorageService {
   static const String _mediaListPrefKey = 'saved_media_file_paths';
 
   /// Save composited PNG/JPEG bytes to the device gallery using the Gal package.
-  /// Also stores the file in the app documents directory for in-app gallery access.
-  static Future<File?> saveCompositedImage(Uint8List imageBytes) async {
+  /// Also stores the file in the app documents directory for in-app gallery access,
+  /// and writes a matching JSON sidecar metadata file (<photo_path_without_ext>.json).
+  static Future<File?> saveCompositedImage(
+    Uint8List imageBytes, {
+    Map<String, dynamic>? metadata,
+  }) async {
     try {
       final hasAccess = await Gal.hasAccess(toAlbum: true);
       if (!hasAccess) {
@@ -30,6 +35,40 @@ class MediaStorageService {
       final localFile = File('${mediaDir.path}/$fileName');
       await localFile.writeAsBytes(imageBytes);
 
+      // Save matching JSON sidecar metadata
+      try {
+        final sidecarPath =
+            localFile.path.replaceAll(RegExp(r'\.[^.]+$'), '.json');
+        final prefs = await SharedPreferences.getInstance();
+        final personName = metadata?['personName'] ??
+            prefs.getString('person_name') ??
+            '';
+        final customNote = metadata?['customNote'] ??
+            prefs.getString('custom_note') ??
+            '';
+        final address = metadata?['address'] ??
+            prefs.getString('custom_address') ??
+            '';
+        final lat = metadata?['lat'];
+        final lng = metadata?['lng'];
+        final altitude = metadata?['altitude'] ?? '';
+        final timeStr =
+            metadata?['timestamp'] ?? DateTime.now().toIso8601String();
+
+        final metaJson = {
+          'timestamp': timeStr,
+          'address': address,
+          'lat': lat,
+          'lng': lng,
+          'altitude': altitude,
+          'personName': personName,
+          'customNote': customNote,
+        };
+        await File(sidecarPath).writeAsString(jsonEncode(metaJson));
+      } catch (e) {
+        debugPrint('Error writing metadata sidecar: $e');
+      }
+
       // Save to device public gallery using Gal
       await Gal.putImageBytes(
         imageBytes,
@@ -45,6 +84,48 @@ class MediaStorageService {
       debugPrint('Error saving composited image: $e');
       return null;
     }
+  }
+
+  /// Backward-compatible alias for saveCompositedImage
+  static Future<File?> saveStampedPhoto(
+    Uint8List imageBytes, {
+    Map<String, dynamic>? metadata,
+  }) =>
+      saveCompositedImage(imageBytes, metadata: metadata);
+
+  /// Read metadata from the JSON sidecar if present, with fallback to file timestamp
+  static Future<Map<String, dynamic>> getMediaMetadata(File photoFile) async {
+    try {
+      final sidecarPath =
+          photoFile.path.replaceAll(RegExp(r'\.[^.]+$'), '.json');
+      final sidecarFile = File(sidecarPath);
+      if (await sidecarFile.exists()) {
+        final jsonStr = await sidecarFile.readAsString();
+        final decoded = jsonDecode(jsonStr);
+        if (decoded is Map<String, dynamic>) {
+          return decoded;
+        }
+      }
+    } catch (e) {
+      debugPrint('Error reading media metadata: $e');
+    }
+
+    String fallbackTime = '';
+    try {
+      fallbackTime = photoFile.lastModifiedSync().toIso8601String();
+    } catch (_) {
+      fallbackTime = DateTime.now().toIso8601String();
+    }
+
+    return {
+      'timestamp': fallbackTime,
+      'address': '',
+      'lat': null,
+      'lng': null,
+      'altitude': '',
+      'personName': '',
+      'customNote': '',
+    };
   }
 
   /// Save stamped MP4 video to app documents directory and device gallery
@@ -86,7 +167,8 @@ class MediaStorageService {
   }
 
   /// Backward-compatible alias for saveStampedVideo
-  static Future<File?> saveVideo(String videoPath) => saveStampedVideo(videoPath);
+  static Future<File?> saveVideo(String videoPath) =>
+      saveStampedVideo(videoPath);
 
   /// Return all files inside GPSCameraMedia/ whose lowercase extension ends with
   /// .png, .jpg, .jpeg, or .mp4, sorted newest-first by lastModifiedSync()
@@ -165,6 +247,12 @@ class MediaStorageService {
       if (await file.exists()) {
         await file.delete();
       }
+      final sidecarPath = file.path.replaceAll(RegExp(r'\.[^.]+$'), '.json');
+      final sidecarFile = File(sidecarPath);
+      if (await sidecarFile.exists()) {
+        await sidecarFile.delete();
+      }
+
       final prefs = await SharedPreferences.getInstance();
       final paths = prefs.getStringList(_mediaListPrefKey) ?? [];
       paths.remove(file.path);

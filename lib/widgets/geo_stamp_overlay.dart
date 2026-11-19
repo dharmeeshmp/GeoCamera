@@ -47,38 +47,53 @@ class GeoStampOverlay extends StatelessWidget {
         ? (altitude * 3.28084).round()
         : altitude.round();
 
+    final effectiveAddress = effectiveSettings.customAddress.trim().isNotEmpty
+        ? effectiveSettings.customAddress.trim()
+        : (address.isNotEmpty ? address : 'Acquiring GPS location...');
+
+    final effectiveDateTime =
+        (effectiveSettings.dateFormat == '12-Hour' && formattedDateTime.isNotEmpty)
+            ? formattedDateTime
+            : effectiveSettings.formatDateTime();
+
     // Template Styling
     Color cardBgColor;
     Color textColor;
     Color iconColor;
     Border? border;
 
-    switch (effectiveSettings.template) {
-      case StampTemplate.classicDark:
-        cardBgColor = Colors.black.withOpacity(0.85);
-        textColor = Colors.white;
-        iconColor = Colors.amber;
-        border = Border.all(color: Colors.amber.withOpacity(0.5), width: 1.0);
-        break;
-      case StampTemplate.cleanWhite:
-        cardBgColor = Colors.white.withOpacity(0.85);
-        textColor = Colors.black87;
-        iconColor = Colors.blueGrey;
-        border = Border.all(color: Colors.black12, width: 1.0);
-        break;
-      case StampTemplate.minimalOverlay:
-        cardBgColor = Colors.black.withOpacity(0.5);
-        textColor = Colors.white;
-        iconColor = Colors.white70;
-        border = null;
-        break;
-      case StampTemplate.modernTranslucent:
-      default:
-        cardBgColor = Colors.black.withOpacity(0.65);
-        textColor = Colors.white;
-        iconColor = Colors.white70;
-        border = Border.all(color: Colors.white.withOpacity(0.18), width: 1.0);
-        break;
+    final isTemplate2 = effectiveSettings.templateIndex == 1 ||
+        effectiveSettings.template == StampTemplate.classicDark;
+
+    if (isTemplate2) {
+      cardBgColor = const Color(0xFF101010);
+      textColor = Colors.white;
+      iconColor = Colors.amberAccent;
+      border =
+          Border.all(color: Colors.amberAccent.withOpacity(0.55), width: 1.2);
+    } else {
+      switch (effectiveSettings.template) {
+        case StampTemplate.cleanWhite:
+          cardBgColor = Colors.white.withOpacity(0.85);
+          textColor = Colors.black87;
+          iconColor = Colors.blueGrey;
+          border = Border.all(color: Colors.black12, width: 1.0);
+          break;
+        case StampTemplate.minimalOverlay:
+          cardBgColor = Colors.black.withOpacity(0.5);
+          textColor = Colors.white;
+          iconColor = Colors.white70;
+          border = null;
+          break;
+        case StampTemplate.modernTranslucent:
+        default:
+          cardBgColor = Colors.black.withOpacity(0.65);
+          textColor = Colors.white;
+          iconColor = Colors.white70;
+          border =
+              Border.all(color: Colors.white.withOpacity(0.18), width: 1.0);
+          break;
+      }
     }
 
     return Transform.scale(
@@ -208,9 +223,7 @@ class GeoStampOverlay extends StatelessWidget {
                               const SizedBox(width: 4),
                               Expanded(
                                 child: Text(
-                                  address.isNotEmpty
-                                      ? address
-                                      : 'Acquiring GPS location...',
+                                  effectiveAddress,
                                   style: TextStyle(
                                     color: textColor,
                                     fontSize: 11.5,
@@ -264,7 +277,7 @@ class GeoStampOverlay extends StatelessWidget {
                               const SizedBox(width: 4),
                               Expanded(
                                 child: Text(
-                                  formattedDateTime,
+                                  effectiveDateTime,
                                   style: TextStyle(
                                     color: textColor,
                                     fontSize: 11.0,
@@ -400,19 +413,61 @@ class GeoStampOverlay extends StatelessWidget {
                           ),
 
                         // Optional Custom Note & Person Stamp (if configured)
-                        if (effectiveSettings.showCustomNote &&
-                            effectiveSettings.customNote.isNotEmpty)
+                        if (effectiveSettings.customNote.trim().isNotEmpty)
                           Padding(
                             padding: const EdgeInsets.only(top: 2),
-                            child: Text(
-                              'Note: ${effectiveSettings.customNote}',
-                              style: TextStyle(
-                                color: textColor.withOpacity(0.85),
-                                fontSize: 9.5,
-                                fontStyle: FontStyle.italic,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.description,
+                                  size: 10,
+                                  color: iconColor == Colors.white70
+                                      ? Colors.lightGreenAccent
+                                      : iconColor,
+                                ),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    'Note: ${effectiveSettings.customNote.trim()}',
+                                    style: TextStyle(
+                                      color: textColor.withOpacity(0.9),
+                                      fontSize: 9.5,
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                        if (effectiveSettings.personName.trim().isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.person,
+                                  size: 10,
+                                  color: iconColor == Colors.white70
+                                      ? Colors.cyanAccent
+                                      : iconColor,
+                                ),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    'By: ${effectiveSettings.personName.trim()}',
+                                    style: TextStyle(
+                                      color: textColor.withOpacity(0.9),
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                       ],

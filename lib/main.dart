@@ -23,6 +23,7 @@ import 'screens/gallery_screen.dart';
 import 'screens/permission_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/media_storage_service.dart';
+import 'services/review_service.dart';
 import 'widgets/geo_stamp_overlay.dart';
 
 void main() async {
@@ -717,6 +718,8 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
           _isProcessingCapture = false;
         });
 
+        ReviewService.recordSuccessfulCapture();
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Row(
@@ -855,6 +858,9 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
             _isRecordingVideo = false;
             _isProcessingCapture = false;
           });
+
+          ReviewService.recordSuccessfulCapture();
+
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Video saved to gallery with GPS Stamp!'),
@@ -1077,58 +1083,88 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   // Left: Recent Media Gallery Thumbnail
-                  GestureDetector(
-                    onTap: () async {
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const GalleryScreen()),
+                  Builder(
+                    builder: (context) {
+                      final bool isLatestVideo = _latestMediaFile != null &&
+                          _latestMediaFile!.path.toLowerCase().endsWith('.mp4');
+
+                      return GestureDetector(
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const GalleryScreen()),
+                          );
+                          _loadLatestThumbnail();
+                        },
+                        child: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: Colors.black45,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                          child: ClipOval(
+                            child: isLatestVideo
+                                ? Container(
+                                    color: Colors.grey.shade900,
+                                    child: const Center(
+                                      child: Icon(
+                                        Icons.play_arrow_rounded,
+                                        color: Colors.white,
+                                        size: 26,
+                                      ),
+                                    ),
+                                  )
+                                : (_latestMediaFile != null
+                                    ? Image.file(
+                                        _latestMediaFile!,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) =>
+                                            const Icon(
+                                          Icons.photo_library,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Icon(
+                                        Icons.photo_library,
+                                        color: Colors.white,
+                                        size: 22,
+                                      )),
+                          ),
+                        ),
                       );
-                      _loadLatestThumbnail();
                     },
-                    child: Container(
-                      width: 50,
-                      height: 50,
-                      decoration: BoxDecoration(
-                        color: Colors.black45,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 2),
-                      ),
-                      child: ClipOval(
-                        child: _latestMediaFile != null
-                            ? Image.file(
-                                _latestMediaFile!,
-                                fit: BoxFit.cover,
-                              )
-                            : const Icon(Icons.photo_library,
-                                color: Colors.white70, size: 24),
-                      ),
-                    ),
                   ),
 
                   // Center: Shutter Button
                   GestureDetector(
                     onTap: _handleCapture,
                     child: Container(
-                      width: 76,
-                      height: 76,
+                      width: 72,
+                      height: 72,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white, width: 4),
                         color: Colors.black38,
                       ),
-                      padding: const EdgeInsets.all(4),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        decoration: BoxDecoration(
-                          shape: _isRecordingVideo
-                              ? BoxShape.rectangle
-                              : BoxShape.circle,
-                          borderRadius: _isRecordingVideo
-                              ? BorderRadius.circular(8)
-                              : null,
-                          color: _captureMode == CameraCaptureMode.video
-                              ? Colors.redAccent
-                              : Colors.white,
+                      child: Center(
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          width: _isRecordingVideo ? 26 : 56,
+                          height: _isRecordingVideo ? 26 : 56,
+                          decoration: BoxDecoration(
+                            shape: _isRecordingVideo
+                                ? BoxShape.rectangle
+                                : BoxShape.circle,
+                            borderRadius: _isRecordingVideo
+                                ? BorderRadius.circular(6)
+                                : null,
+                            color: _captureMode == CameraCaptureMode.video
+                                ? Colors.redAccent
+                                : Colors.white,
+                          ),
                         ),
                       ),
                     ),

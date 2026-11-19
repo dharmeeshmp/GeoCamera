@@ -19,26 +19,25 @@ class MediaStorageService {
         }
       }
 
-      // Save locally to App Support / Documents folder for internal gallery preview
-      final directory = await getApplicationDocumentsDirectory();
-      final mediaDir = Directory('${directory.path}/GPSCamera');
+      final docsDir = await getApplicationDocumentsDirectory();
+      final mediaDir = Directory('${docsDir.path}/GPSCameraMedia');
       if (!await mediaDir.exists()) {
         await mediaDir.create(recursive: true);
       }
 
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final fileName = 'GPS_IMG_$timestamp.jpg';
+      final fileName = 'GPSCAM_$timestamp.jpg';
       final localFile = File('${mediaDir.path}/$fileName');
       await localFile.writeAsBytes(imageBytes);
 
       // Save to device public gallery using Gal
       await Gal.putImageBytes(
         imageBytes,
-        name: 'GPS_IMG_$timestamp',
-        album: 'GPS Map Camera',
+        name: 'GPSCAM_$timestamp',
+        album: 'GPS Camera',
       );
 
-      // Record in preferences for quick in-app gallery display
+      // Record in preferences for fast tracking
       await _recordMediaFilePath(localFile.path);
 
       return localFile;
@@ -48,8 +47,8 @@ class MediaStorageService {
     }
   }
 
-  /// Save captured MP4 video to the device gallery
-  static Future<File?> saveVideo(String videoPath) async {
+  /// Save stamped MP4 video to app documents directory and device gallery
+  static Future<File?> saveStampedVideo(String sourceVideoPath) async {
     try {
       final hasAccess = await Gal.hasAccess(toAlbum: true);
       if (!hasAccess) {
@@ -59,73 +58,105 @@ class MediaStorageService {
         }
       }
 
-      final directory = await getApplicationDocumentsDirectory();
-      final mediaDir = Directory('${directory.path}/GPSCamera');
+      final docsDir = await getApplicationDocumentsDirectory();
+      final mediaDir = Directory('${docsDir.path}/GPSCameraMedia');
       if (!await mediaDir.exists()) {
         await mediaDir.create(recursive: true);
       }
 
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final fileName = 'GPS_VID_$timestamp.mp4';
-      final targetFile = File('${mediaDir.path}/$fileName');
-      await File(videoPath).copy(targetFile.path);
+      final fileName = 'GPSCAM_$timestamp.mp4';
+      final savedAppFile = File('${mediaDir.path}/$fileName');
 
+      // Copy source video into GPSCameraMedia before any temp cache files are deleted
+      await File(sourceVideoPath).copy(savedAppFile.path);
+
+      // Export to the public device album via Gal
       await Gal.putVideo(
-        targetFile.path,
-        album: 'GPS Map Camera',
+        savedAppFile.path,
+        album: 'GPS Camera',
       );
 
-      await _recordMediaFilePath(targetFile.path);
-      return targetFile;
+      await _recordMediaFilePath(savedAppFile.path);
+      return savedAppFile;
     } catch (e) {
-      debugPrint('Error saving video: $e');
+      debugPrint('Error saving stamped video: $e');
       return null;
     }
   }
 
-  /// Save stamped MP4 video to the device gallery
-  static Future<File?> saveStampedVideo(String videoPath) => saveVideo(videoPath);
+  /// Backward-compatible alias for saveStampedVideo
+  static Future<File?> saveVideo(String videoPath) => saveStampedVideo(videoPath);
 
-  /// Get the most recent media file for the camera screen's preview thumbnail
-  static Future<File?> getLatestMediaFile() async {
-    final all = await getAllMediaFiles();
-    if (all.isNotEmpty) {
-      return all.first;
-    }
-    return null;
-  }
-
-  /// Retrieve all recorded media files in reverse chronological order
-  static Future<List<File>> getAllMediaFiles() async {
+  /// Return all files inside GPSCameraMedia/ whose lowercase extension ends with
+  /// .png, .jpg, .jpeg, or .mp4, sorted newest-first by lastModifiedSync()
+  static Future<List<File>> getAppMediaFiles() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final paths = prefs.getStringList(_mediaListPrefKey) ?? [];
-      final List<File> validFiles = [];
-      final List<String> updatedPaths = [];
+      final docsDir = await getApplicationDocumentsDirectory();
+      final mediaDir = Directory('${docsDir.path}/GPSCameraMedia');
+      if (!await mediaDir.exists()) {
+        await mediaDir.create(recursive: true);
+      }
 
-      for (final p in paths) {
-        final file = File(p);
-        if (await file.exists()) {
-          validFiles.add(file);
-          updatedPaths.add(p);
+      final List<FileSystemEntity> entities = mediaDir.listSync();
+      final List<File> files = [];
+
+      for (final entity in entities) {
+        if (entity is File) {
+          final ext = entity.path.toLowerCase();
+          if (ext.endsWith('.png') ||
+              ext.endsWith('.jpg') ||
+              ext.endsWith('.jpeg') ||
+              ext.endsWith('.mp4')) {
+            files.add(entity);
+          }
         }
       }
 
-      // If missing files were filtered out, update prefs
-      if (updatedPaths.length != paths.length) {
-        await prefs.setStringList(_mediaListPrefKey, updatedPaths);
+      // Check legacy directory if files were saved previously under GPSCamera/
+      final legacyDir = Directory('${docsDir.path}/GPSCamera');
+      if (await legacyDir.exists()) {
+        for (final entity in legacyDir.listSync()) {
+          if (entity is File) {
+            final ext = entity.path.toLowerCase();
+            if (ext.endsWith('.png') ||
+                ext.endsWith('.jpg') ||
+                ext.endsWith('.jpeg') ||
+                ext.endsWith('.mp4')) {
+              if (!files.any((f) => f.path == entity.path)) {
+                files.add(entity);
+              }
+            }
+          }
+        }
       }
 
-      // Sort newest first based on file modified time or name
-      validFiles.sort((a, b) {
-        return b.path.compareTo(a.path);
+      // Sort newest-first by lastModifiedSync()
+      files.sort((a, b) {
+        try {
+          return b.lastModifiedSync().compareTo(a.lastModifiedSync());
+        } catch (_) {
+          return b.path.compareTo(a.path);
+        }
       });
 
-      return validFiles;
+      return files;
     } catch (e) {
       debugPrint('Error reading media files: $e');
       return [];
     }
+  }
+
+  /// Alias for backward compatibility
+  static Future<List<File>> getAllMediaFiles() => getAppMediaFiles();
+
+  /// Get the most recent media file for the camera screen's preview thumbnail
+  static Future<File?> getLatestMediaFile() async {
+    final all = await getAppMediaFiles();
+    if (all.isNotEmpty) {
+      return all.first;
+    }
+    return null;
   }
 
   /// Remove a media file from disk and preferences
@@ -147,8 +178,8 @@ class MediaStorageService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final paths = prefs.getStringList(_mediaListPrefKey) ?? [];
-      paths.remove(path); // Avoid duplicates
-      paths.insert(0, path); // Newest first
+      paths.remove(path);
+      paths.insert(0, path);
       await prefs.setStringList(_mediaListPrefKey, paths);
     } catch (e) {
       debugPrint('Error recording media path: $e');

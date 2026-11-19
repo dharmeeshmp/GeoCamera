@@ -85,6 +85,16 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   bool _isCameraInitializing = false;
   String? _cameraErrorMessage;
 
+  // Zoom Capabilities & State
+  double _minZoom = 1.0;
+  double _maxZoom = 1.0;
+  double _currentZoom = 1.0;
+  double _baseZoom = 1.0;
+
+  // Tap-to-Focus & Exposure Lock State
+  Offset? _focusPoint;
+  Timer? _focusRingTimer;
+
   // Capture Mode & Video Recording State
   CameraCaptureMode _captureMode = CameraCaptureMode.photo;
   bool _isRecordingVideo = false;
@@ -164,6 +174,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.settings.removeListener(_onSettingsChanged);
+    _focusRingTimer?.cancel();
     _recordTimer?.cancel();
     _clockTimer?.cancel();
     _cameraController?.dispose();
@@ -293,9 +304,34 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     try {
       await newController.initialize();
       await newController.setFlashMode(_currentFlashMode);
+      try {
+        await newController.setFocusMode(FocusMode.auto);
+      } catch (e) {
+        debugPrint('Focus mode error: $e');
+      }
+
+      double minZoom = 1.0;
+      double maxZoom = 1.0;
+      try {
+        minZoom = await newController.getMinZoomLevel();
+        maxZoom = await newController.getMaxZoomLevel();
+      } catch (e) {
+        debugPrint('Error querying zoom levels: $e');
+      }
+
+      final currentZoom = 1.0.clamp(minZoom, maxZoom);
+      try {
+        await newController.setZoomLevel(currentZoom);
+      } catch (e) {
+        debugPrint('Error setting initial zoom level: $e');
+      }
+
       if (mounted) {
         setState(() {
           _cameraController = newController;
+          _minZoom = minZoom;
+          _maxZoom = maxZoom;
+          _currentZoom = currentZoom;
           _isCameraReady = true;
           _isCameraInitializing = false;
           _cameraErrorMessage = null;
@@ -894,13 +930,97 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
         fit: StackFit.expand,
         children: [
           // ----------------------------------------------------
-          // 1. FULL-SCREEN CAMERA PREVIEW
+          // 1. FULL-SCREEN CAMERA PREVIEW (With Tap-to-Focus & Pinch-to-Zoom)
           // ----------------------------------------------------
           if (_isCameraReady && _cameraController != null)
             Center(
               child: AspectRatio(
                 aspectRatio: 1 / _cameraController!.value.aspectRatio,
-                child: CameraPreview(_cameraController!),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapUp: (TapUpDetails details) async {
+                        if (_cameraController == null ||
+                            !_cameraController!.value.isInitialized) {
+                          return;
+                        }
+
+                        final offset = Offset(
+                          (details.localPosition.dx / constraints.maxWidth)
+                              .clamp(0.0, 1.0),
+                          (details.localPosition.dy / constraints.maxHeight)
+                              .clamp(0.0, 1.0),
+                        );
+
+                        try {
+                          await _cameraController!.setFocusPoint(offset);
+                          await _cameraController!.setExposurePoint(offset);
+                        } catch (e) {
+                          debugPrint('Focus/Exposure point error: $e');
+                        }
+
+                        setState(() {
+                          _focusPoint = details.localPosition;
+                        });
+
+                        _focusRingTimer?.cancel();
+                        _focusRingTimer =
+                            Timer(const Duration(milliseconds: 1200), () {
+                          if (mounted) {
+                            setState(() {
+                              _focusPoint = null;
+                            });
+                          }
+                        });
+                      },
+                      onScaleStart: (_) {
+                        _baseZoom = _currentZoom;
+                      },
+                      onScaleUpdate: (ScaleUpdateDetails details) async {
+                        if (details.scale != 1.0 &&
+                            _cameraController != null &&
+                            _cameraController!.value.isInitialized) {
+                          final newZoom = (_baseZoom * details.scale)
+                              .clamp(_minZoom, _maxZoom);
+                          setState(() {
+                            _currentZoom = newZoom;
+                          });
+                          try {
+                            await _cameraController!.setZoomLevel(newZoom);
+                          } catch (e) {
+                            debugPrint('Zoom level error: $e');
+                          }
+                        }
+                      },
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          CameraPreview(_cameraController!),
+                          // 64x64 rounded focus square at tapped spot
+                          if (_focusPoint != null)
+                            Positioned(
+                              left: _focusPoint!.dx - 32,
+                              top: _focusPoint!.dy - 32,
+                              child: IgnorePointer(
+                                child: Container(
+                                  width: 64,
+                                  height: 64,
+                                  decoration: BoxDecoration(
+                                    border: Border.all(
+                                      color: Colors.amberAccent,
+                                      width: 1.8,
+                                    ),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ),
             )
           else
@@ -1046,27 +1166,96 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
           ),
 
           // ----------------------------------------------------
-          // 3. LIVE GEO-STAMP OVERLAY (Anchored Above Shutter)
+          // 3. LIVE GEO-STAMP OVERLAY & COMPACT QUICK-ZOOM PILLS
           // ----------------------------------------------------
           Positioned(
             left: 0,
             right: 0,
             bottom: 110,
-            child: RepaintBoundary(
-              key: _liveStampKey,
-              child: GeoStampOverlay(
-                latitude: _latitude,
-                longitude: _longitude,
-                altitude: _altitude,
-                accuracy: _accuracy,
-                address: _currentAddress,
-                formattedDateTime: liveFormattedDateTime,
-                magneticField: _smoothedMagneticField,
-                heading: _heading,
-                cardinalDirection: _cardinalDirection,
-                showTelemetry: _showTelemetry,
-                settings: widget.settings,
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Compact translucent quick-zoom pill bar (with 6px bottom margin)
+                if (_isCameraReady && _maxZoom > 1.0)
+                  Builder(
+                    builder: (context) {
+                      final presets = [1.0, 2.0, 3.0, 5.0]
+                          .where((z) => z <= _maxZoom || z == 1.0)
+                          .toList();
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.black45,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: presets.map((preset) {
+                            final bool isActive =
+                                (_currentZoom - preset).abs() < 0.25;
+                            return GestureDetector(
+                              onTap: () async {
+                                setState(() {
+                                  _currentZoom = preset;
+                                });
+                                try {
+                                  await _cameraController!.setZoomLevel(preset);
+                                } catch (e) {
+                                  debugPrint('Error setting zoom: $e');
+                                }
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: isActive
+                                      ? Colors.black54
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: Text(
+                                  isActive
+                                      ? '${_currentZoom.toStringAsFixed(1)}x'
+                                      : '${preset.toStringAsFixed(1)}x',
+                                  style: TextStyle(
+                                    color: isActive
+                                        ? Colors.amberAccent
+                                        : Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: isActive
+                                        ? FontWeight.bold
+                                        : FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      );
+                    },
+                  ),
+
+                // Live Geo-Stamp Overlay
+                RepaintBoundary(
+                  key: _liveStampKey,
+                  child: GeoStampOverlay(
+                    latitude: _latitude,
+                    longitude: _longitude,
+                    altitude: _altitude,
+                    accuracy: _accuracy,
+                    address: _currentAddress,
+                    formattedDateTime: liveFormattedDateTime,
+                    magneticField: _smoothedMagneticField,
+                    heading: _heading,
+                    cardinalDirection: _cardinalDirection,
+                    showTelemetry: _showTelemetry,
+                    settings: widget.settings,
+                  ),
+                ),
+              ],
             ),
           ),
 

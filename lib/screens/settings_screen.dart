@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../models/ad_config.dart';
 import '../models/app_settings.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -17,6 +20,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _noteController;
   late TextEditingController _nameController;
 
+  BannerAd? _bannerAd;
+  bool _isBannerLoaded = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _loadAdaptiveBanner();
+  }
+
+  Future<void> _loadAdaptiveBanner() async {
+    if (_bannerAd != null) return;
+
+    final int width = MediaQuery.sizeOf(context).width.truncate();
+    final AdSize? adaptiveSize =
+        await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(width);
+
+    if (adaptiveSize == null || !mounted) return;
+
+    final banner = BannerAd(
+      adUnitId: AdConfig.bannerAdUnitId,
+      size: adaptiveSize,
+      request: const AdRequest(),
+      listener: BannerAdListener(
+        onAdLoaded: (ad) {
+          if (!mounted) {
+            ad.dispose();
+            return;
+          }
+          setState(() {
+            _bannerAd = ad as BannerAd;
+            _isBannerLoaded = true;
+          });
+        },
+        onAdFailedToLoad: (ad, error) {
+          ad.dispose();
+        },
+      ),
+    );
+
+    await banner.load();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -28,6 +73,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    _bannerAd?.dispose();
     _noteController.dispose();
     _nameController.dispose();
     super.dispose();
@@ -248,8 +294,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+          const SizedBox(height: 20),
+
+          _buildSectionHeader('ABOUT'),
+          Card(
+            color: const Color(0xFF1E1E1E),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: ListTile(
+              leading: const Icon(Icons.phone, color: Colors.blue),
+              title: const Text(
+                'Contact Support',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 14,
+                ),
+              ),
+              subtitle: const Text(
+                'Get help or call support',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+              onTap: () async {
+                final uri = Uri(scheme: 'tel', path: '+910000000000');
+                if (await canLaunchUrl(uri)) {
+                  await launchUrl(uri);
+                }
+              },
+            ),
+          ),
           const SizedBox(height: 30),
         ],
+      ),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: _bannerAd?.size.height.toDouble() ?? 60,
+          width: double.infinity,
+          child: (_isBannerLoaded && _bannerAd != null)
+              ? AdWidget(ad: _bannerAd!)
+              : const SizedBox.shrink(),
+        ),
       ),
     );
   }

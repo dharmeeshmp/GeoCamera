@@ -83,6 +83,9 @@ class MediaStorageService {
     }
   }
 
+  /// Save stamped MP4 video to the device gallery
+  static Future<File?> saveStampedVideo(String videoPath) => saveVideo(videoPath);
+
   /// Get the most recent media file for the camera screen's preview thumbnail
   static Future<File?> getLatestMediaFile() async {
     final all = await getAllMediaFiles();

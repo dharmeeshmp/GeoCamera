@@ -17,6 +17,7 @@ class GeoStampOverlay extends StatelessWidget {
   final bool showTelemetry;
   final AppSettings? settings;
   final double scale;
+  final EdgeInsetsGeometry? margin;
 
   const GeoStampOverlay({
     super.key,
@@ -32,6 +33,7 @@ class GeoStampOverlay extends StatelessWidget {
     this.showTelemetry = true,
     this.settings,
     this.scale = 1.0,
+    this.margin,
   });
 
   @override
@@ -83,7 +85,7 @@ class GeoStampOverlay extends StatelessWidget {
       scale: scale,
       alignment: Alignment.bottomCenter,
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        margin: margin ?? const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: cardBgColor,
           borderRadius: BorderRadius.circular(12),
@@ -215,6 +217,7 @@ class GeoStampOverlay extends StatelessWidget {
                                     fontWeight: FontWeight.bold,
                                     height: 1.15,
                                   ),
+                                  softWrap: true,
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
                                 ),

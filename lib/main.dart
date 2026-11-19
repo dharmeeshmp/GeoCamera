@@ -7,13 +7,17 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
+import 'models/ad_config.dart';
 import 'models/app_settings.dart';
 import 'screens/gallery_screen.dart';
 import 'screens/permission_screen.dart';
@@ -119,6 +123,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
 
   // Photo Capture & Compositing Keys
   final GlobalKey _compositingBoundaryKey = GlobalKey();
+  final GlobalKey _liveStampKey = GlobalKey();
   Uint8List? _capturedPhotoBytes;
   double _capturedAspectRatio = 3 / 4;
 
@@ -136,8 +141,13 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
 
   // AdMob Banner State
   BannerAd? _bannerAd;
-  bool _isBannerAdLoaded = false;
-  static const String _adUnitId = 'ca-app-pub-3940256099942544/6300978111';
+  bool _isBannerLoaded = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _loadAdaptiveBanner();
+  }
 
   @override
   void initState() {
@@ -218,7 +228,6 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     _initLocation();
     _initSensors();
     _initCameras();
-    _initAdMob();
   }
 
   // ==========================================
@@ -433,29 +442,47 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
         final p = placemarks.first;
         final parts = <String>[];
 
+        final street = p.street;
+        final thoroughfare = p.thoroughfare;
+
         if (p.name != null &&
             p.name!.isNotEmpty &&
-            p.name != p.thoroughfare &&
-            p.name != p.subThoroughfare) {
+            p.name != thoroughfare &&
+            p.name != p.subThoroughfare &&
+            (street == null || !street.toLowerCase().contains(p.name!.toLowerCase()))) {
           parts.add(p.name!);
         }
-        if (p.street != null &&
-            p.street!.isNotEmpty &&
-            !parts.contains(p.street)) {
-          parts.add(p.street!);
+
+        // Deduplicate: if thoroughfare is already contained inside street, skip appending it separately
+        if (street != null && street.isNotEmpty) {
+          if (!parts.contains(street)) {
+            parts.add(street);
+          }
+        } else if (thoroughfare != null && thoroughfare.isNotEmpty) {
+          if (!parts.contains(thoroughfare)) {
+            parts.add(thoroughfare);
+          }
         }
-        if (p.subLocality != null && p.subLocality!.isNotEmpty) {
+
+        if (p.subLocality != null &&
+            p.subLocality!.isNotEmpty &&
+            !parts.contains(p.subLocality)) {
           parts.add(p.subLocality!);
         }
-        if (p.locality != null && p.locality!.isNotEmpty) {
+        if (p.locality != null &&
+            p.locality!.isNotEmpty &&
+            !parts.contains(p.locality)) {
           parts.add(p.locality!);
         }
         if (p.administrativeArea != null && p.administrativeArea!.isNotEmpty) {
           final postal =
               p.postalCode != null && p.postalCode!.isNotEmpty ? ' ${p.postalCode}' : '';
-          parts.add('${p.administrativeArea}$postal');
+          final admin = '${p.administrativeArea}$postal';
+          if (!parts.contains(admin)) {
+            parts.add(admin);
+          }
         }
-        if (p.country != null && p.country!.isNotEmpty) {
+        if (p.country != null && p.country!.isNotEmpty && !parts.contains(p.country)) {
           parts.add(p.country!);
         }
 
@@ -559,29 +586,39 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   }
 
   // ==========================================
-  // GOOGLE ADMOB BANNER
+  // GOOGLE ADMOB ADAPTIVE BANNER
   // ==========================================
-  void _initAdMob() {
-    _bannerAd = BannerAd(
-      adUnitId: _adUnitId,
-      size: AdSize.banner,
+  Future<void> _loadAdaptiveBanner() async {
+    if (_bannerAd != null) return;
+
+    final int width = MediaQuery.sizeOf(context).width.truncate();
+    final AdSize? adaptiveSize =
+        await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(width);
+
+    if (adaptiveSize == null || !mounted) return;
+
+    final banner = BannerAd(
+      adUnitId: AdConfig.bannerAdUnitId,
+      size: adaptiveSize,
       request: const AdRequest(),
       listener: BannerAdListener(
         onAdLoaded: (ad) {
-          debugPrint('AdMob Banner successfully loaded.');
-          if (mounted) {
-            setState(() {
-              _isBannerAdLoaded = true;
-            });
+          if (!mounted) {
+            ad.dispose();
+            return;
           }
+          setState(() {
+            _bannerAd = ad as BannerAd;
+            _isBannerLoaded = true;
+          });
         },
         onAdFailedToLoad: (ad, error) {
-          debugPrint('AdMob Banner failed to load: $error');
           ad.dispose();
         },
       ),
     );
-    _bannerAd!.load();
+
+    await banner.load();
   }
 
   // ==========================================
@@ -717,6 +754,25 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   // ==========================================
   // VIDEO RECORDING LOGIC
   // ==========================================
+  Future<String?> _captureLiveStampToPng() async {
+    try {
+      final boundary = _liveStampKey.currentContext?.findRenderObject()
+          as RenderRepaintBoundary?;
+      if (boundary == null) return null;
+      final ui.Image image = await boundary.toImage(pixelRatio: 2.5);
+      final ByteData? byteData =
+          await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return null;
+      final tempDir = await getTemporaryDirectory();
+      final stampFile = File('${tempDir.path}/video_stamp.png');
+      await stampFile.writeAsBytes(byteData.buffer.asUint8List());
+      return stampFile.path;
+    } catch (e) {
+      debugPrint('Error capturing live stamp for video: $e');
+      return null;
+    }
+  }
+
   Future<void> _startVideoRecording() async {
     if (_cameraController == null ||
         !_cameraController!.value.isInitialized ||
@@ -726,6 +782,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
 
     try {
       await _cameraController!.startVideoRecording();
+      _captureLiveStampToPng(); // Pre-cache live stamp at start
       _recordDurationSeconds = 0;
       _recordTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (mounted) {
@@ -749,17 +806,58 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     _recordTimer = null;
 
     try {
-      final file = await _cameraController!.stopVideoRecording();
+      // Capture live stamp right before stopping
+      final stampPngPath = await _captureLiveStampToPng();
+
+      final rawVideo = await _cameraController!.stopVideoRecording();
       if (!isEmergency) {
-        final saved = await MediaStorageService.saveVideo(file.path);
+        if (mounted) {
+          setState(() {
+            _isProcessingCapture = true;
+          });
+        }
+
+        String finalVideoPath = rawVideo.path;
+
+        if (stampPngPath != null && await File(stampPngPath).exists()) {
+          final tempDir = await getTemporaryDirectory();
+          final timestamp = DateTime.now().millisecondsSinceEpoch;
+          final stampedVideoPath = '${tempDir.path}/stamped_$timestamp.mp4';
+
+          final cmd = '-y -i "${rawVideo.path}" -i "$stampPngPath" '
+              '-filter_complex "[1:v][0:v]scale2ref=w=iw*0.94:h=ow/mdar[stamp][vid];[vid][stamp]overlay=(W-w)/2:H-h-24" '
+              '-c:v libx264 -preset ultrafast -crf 23 -c:a copy "$stampedVideoPath"';
+
+          final session = await FFmpegKit.execute(cmd);
+          final returnCode = await session.getReturnCode();
+
+          if (ReturnCode.isSuccess(returnCode)) {
+            finalVideoPath = stampedVideoPath;
+          } else {
+            final output = await session.getOutput();
+            debugPrint('FFmpeg video burning failed: $output');
+          }
+        }
+
+        final saved =
+            await MediaStorageService.saveStampedVideo(finalVideoPath);
+
+        // Clean up temporary raw video file if stamped was created
+        try {
+          if (finalVideoPath != rawVideo.path) {
+            await File(rawVideo.path).delete();
+          }
+        } catch (_) {}
+
         if (mounted) {
           setState(() {
             _latestMediaFile = saved;
             _isRecordingVideo = false;
+            _isProcessingCapture = false;
           });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Video saved to gallery!'),
+              content: Text('Video saved to gallery with GPS Stamp!'),
               backgroundColor: Color(0xFF1E1E1E),
             ),
           );
@@ -770,6 +868,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       if (mounted) {
         setState(() {
           _isRecordingVideo = false;
+          _isProcessingCapture = false;
         });
       }
     }
@@ -947,18 +1046,21 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
             left: 0,
             right: 0,
             bottom: 110,
-            child: GeoStampOverlay(
-              latitude: _latitude,
-              longitude: _longitude,
-              altitude: _altitude,
-              accuracy: _accuracy,
-              address: _currentAddress,
-              formattedDateTime: liveFormattedDateTime,
-              magneticField: _smoothedMagneticField,
-              heading: _heading,
-              cardinalDirection: _cardinalDirection,
-              showTelemetry: _showTelemetry,
-              settings: widget.settings,
+            child: RepaintBoundary(
+              key: _liveStampKey,
+              child: GeoStampOverlay(
+                latitude: _latitude,
+                longitude: _longitude,
+                altitude: _altitude,
+                accuracy: _accuracy,
+                address: _currentAddress,
+                formattedDateTime: liveFormattedDateTime,
+                magneticField: _smoothedMagneticField,
+                heading: _heading,
+                cardinalDirection: _cardinalDirection,
+                showTelemetry: _showTelemetry,
+                settings: widget.settings,
+              ),
             ),
           ),
 
@@ -1088,8 +1190,8 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
               child: RepaintBoundary(
                 key: _compositingBoundaryKey,
                 child: SizedBox(
-                  width: 1080,
-                  height: 1080 / _capturedAspectRatio,
+                  width: 412.0,
+                  height: 412.0 / _capturedAspectRatio,
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
@@ -1100,9 +1202,9 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                       ),
                       // Burned Geo-Stamp Overlay at the bottom
                       Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 24,
+                        left: 12,
+                        right: 12,
+                        bottom: 16,
                         child: GeoStampOverlay(
                           latitude: _snapLat,
                           longitude: _snapLng,
@@ -1116,7 +1218,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                           cardinalDirection: _snapCardinal,
                           showTelemetry: _snapTelemetry,
                           settings: widget.settings,
-                          scale: 1.45,
+                          margin: EdgeInsets.zero,
                         ),
                       ),
                     ],
@@ -1130,18 +1232,16 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       // ----------------------------------------------------
       // BOTTOM NAVIGATION BAR: GOOGLE ADMOB BANNER
       // ----------------------------------------------------
-      bottomNavigationBar: _isBannerAdLoaded && _bannerAd != null
-          ? SafeArea(
-              top: false,
-              child: Container(
-                width: _bannerAd!.size.width.toDouble(),
-                height: _bannerAd!.size.height.toDouble(),
-                color: Colors.black,
-                alignment: Alignment.center,
-                child: AdWidget(ad: _bannerAd!),
-              ),
-            )
-          : null,
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: _bannerAd?.size.height.toDouble() ?? 60,
+          width: double.infinity,
+          child: (_isBannerLoaded && _bannerAd != null)
+              ? AdWidget(ad: _bannerAd!)
+              : const SizedBox.shrink(),
+        ),
+      ),
     );
   }
 }

@@ -3,6 +3,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../main.dart';
 import '../models/app_settings.dart';
+import '../services/app_localizations.dart';
 
 class PermissionScreen extends StatefulWidget {
   final AppSettings settings;
@@ -113,126 +114,131 @@ class _PermissionScreenState extends State<PermissionScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      body: SafeArea(
-        child: _isChecking
-            ? const Center(
-                child: CircularProgressIndicator(color: Colors.amberAccent),
-              )
-            : Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24.0, vertical: 20.0),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Spacer(),
-                    Center(
-                      child: Container(
-                        width: 90,
-                        height: 90,
-                        decoration: BoxDecoration(
-                          color: Colors.amberAccent.withOpacity(0.12),
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: Colors.amberAccent.withOpacity(0.4),
-                            width: 2,
+    return ValueListenableBuilder<Locale>(
+      valueListenable: AppLocaleController.localeNotifier,
+      builder: (context, locale, _) {
+        return Scaffold(
+          backgroundColor: const Color(0xFF121212),
+          body: SafeArea(
+            child: _isChecking
+                ? const Center(
+                    child: CircularProgressIndicator(color: Colors.amberAccent),
+                  )
+                : Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 24.0, vertical: 20.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Spacer(),
+                        Center(
+                          child: Container(
+                            width: 90,
+                            height: 90,
+                            decoration: BoxDecoration(
+                              color: Colors.amberAccent.withOpacity(0.12),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.amberAccent.withOpacity(0.4),
+                                width: 2,
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.camera_alt_rounded,
+                              size: 46,
+                              color: Colors.amberAccent,
+                            ),
                           ),
                         ),
-                        child: const Icon(
-                          Icons.camera_alt_rounded,
-                          size: 46,
-                          color: Colors.amberAccent,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    const Text(
-                      'GPS Map Camera',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 26,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    const Text(
-                      'To stamp photos with real-time GPS coordinates, reverse-geocoded address, altitude, and sensor telemetry, please grant the following permissions:',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
-                        height: 1.4,
-                      ),
-                    ),
-                    const SizedBox(height: 36),
-
-                    _buildPermissionTile(
-                      icon: Icons.camera_alt_outlined,
-                      title: 'Camera Access',
-                      subtitle: 'Required to capture photos and record videos.',
-                      isGranted: _cameraGranted,
-                    ),
-                    const SizedBox(height: 14),
-                    _buildPermissionTile(
-                      icon: Icons.location_on_outlined,
-                      title: 'High-Accuracy Location',
-                      subtitle: 'Used for live GPS coordinates, altitude & street address.',
-                      isGranted: _locationGranted,
-                    ),
-                    const SizedBox(height: 14),
-                    _buildPermissionTile(
-                      icon: Icons.mic_none_outlined,
-                      title: 'Microphone Access',
-                      subtitle: 'Required for recording sound in video mode.',
-                      isGranted: _microphoneGranted,
-                    ),
-
-                    const Spacer(),
-
-                    if (_isPermanentlyDenied)
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orangeAccent,
-                          foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        icon: const Icon(Icons.settings),
-                        label: const Text(
-                          'Open App Settings',
+                        const SizedBox(height: 24),
+                        const Text(
+                          'GPS Map Camera',
+                          textAlign: TextAlign.center,
                           style: TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.bold),
-                        ),
-                        onPressed: openAppSettings,
-                      )
-                    else
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.amberAccent,
-                          foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
+                            color: Colors.white,
+                            fontSize: 26,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
                           ),
                         ),
-                        onPressed: _requestPermissions,
-                        child: const Text(
-                          'Grant Permissions',
-                          style: TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.bold),
+                        const SizedBox(height: 10),
+                        Text(
+                          tr('permissions_desc'),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 14,
+                            height: 1.4,
+                          ),
                         ),
-                      ),
-                    const SizedBox(height: 16),
-                  ],
-                ),
-              ),
-      ),
+                        const SizedBox(height: 36),
+
+                        _buildPermissionTile(
+                          icon: Icons.camera_alt_outlined,
+                          title: tr('camera_permission'),
+                          subtitle: tr('camera_permission_desc'),
+                          isGranted: _cameraGranted,
+                        ),
+                        const SizedBox(height: 14),
+                        _buildPermissionTile(
+                          icon: Icons.location_on_outlined,
+                          title: tr('location_permission'),
+                          subtitle: tr('location_permission_desc'),
+                          isGranted: _locationGranted,
+                        ),
+                        const SizedBox(height: 14),
+                        _buildPermissionTile(
+                          icon: Icons.mic_none_outlined,
+                          title: tr('microphone_permission'),
+                          subtitle: tr('microphone_permission_desc'),
+                          isGranted: _microphoneGranted,
+                        ),
+
+                        const Spacer(),
+
+                        if (_isPermanentlyDenied)
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.orangeAccent,
+                              foregroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            icon: const Icon(Icons.settings),
+                            label: Text(
+                              tr('open_settings'),
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.bold),
+                            ),
+                            onPressed: openAppSettings,
+                          )
+                        else
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.amberAccent,
+                              foregroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            onPressed: _requestPermissions,
+                            child: Text(
+                              tr('grant_permissions'),
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        const SizedBox(height: 16),
+                      ],
+                    ),
+                  ),
+          ),
+        );
+      },
     );
   }
 

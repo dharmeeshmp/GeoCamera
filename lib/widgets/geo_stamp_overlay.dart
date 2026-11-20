@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/app_settings.dart';
 
@@ -24,6 +27,13 @@ class GeoStampOverlay extends StatelessWidget {
   final bool isRefreshingGps;
   final VoidCallback? onRefreshGps;
   final MapController? mapController;
+  final bool showVerifiedBadge;
+  final bool isMockLocation;
+  final bool isSatelliteTime;
+  final String? verificationHash;
+  final bool includeMapsLink;
+  final bool isClockTampered;
+  final String? timeSourceLabel;
 
   const GeoStampOverlay({
     super.key,
@@ -44,6 +54,13 @@ class GeoStampOverlay extends StatelessWidget {
     this.isRefreshingGps = false,
     this.onRefreshGps,
     this.mapController,
+    this.showVerifiedBadge = false,
+    this.isMockLocation = false,
+    this.isSatelliteTime = false,
+    this.verificationHash,
+    this.includeMapsLink = true,
+    this.isClockTampered = false,
+    this.timeSourceLabel,
   });
 
   @override
@@ -61,10 +78,9 @@ class GeoStampOverlay extends StatelessWidget {
         ? effectiveSettings.customAddress.trim()
         : (address.isNotEmpty ? address : 'Acquiring GPS location...');
 
-    final effectiveDateTime =
-        (effectiveSettings.dateFormat == '12-Hour' && formattedDateTime.isNotEmpty)
-            ? formattedDateTime
-            : effectiveSettings.formatDateTime();
+    final effectiveDateTime = formattedDateTime.isNotEmpty
+        ? formattedDateTime
+        : effectiveSettings.formatDateTime(DateTime.utc(2026));
 
     // Template Styling
     Color cardBgColor;
@@ -253,7 +269,7 @@ class GeoStampOverlay extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // ROW 1: Full Address & GPS Freshness / 1-Tap Refresh
+                        // ROW 1: Full Address
                         if (effectiveSettings.showAddress)
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -280,16 +296,7 @@ class GeoStampOverlay extends StatelessWidget {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
-                              if (lastGpsFixTime != null || onRefreshGps != null) ...[
-                                const SizedBox(width: 4),
-                                _buildGpsFreshnessWidget(),
-                              ],
                             ],
-                          )
-                        else if (lastGpsFixTime != null || onRefreshGps != null)
-                          Align(
-                            alignment: Alignment.topRight,
-                            child: _buildGpsFreshnessWidget(),
                           ),
 
                         // ROW 2: Coordinates (Lat / Lon)
@@ -304,14 +311,17 @@ class GeoStampOverlay extends StatelessWidget {
                                     : iconColor,
                               ),
                               const SizedBox(width: 4),
-                              Text(
-                                hasValidGps
-                                    ? '${latitude.toStringAsFixed(4)}°, ${longitude.toStringAsFixed(4)}°'
-                                    : '--.----°, --.----°',
-                                style: TextStyle(
-                                  color: textColor,
-                                  fontSize: 11.0,
-                                  fontWeight: FontWeight.w600,
+                              Flexible(
+                                child: Text(
+                                  hasValidGps
+                                      ? '${latitude.toStringAsFixed(4)}°, ${longitude.toStringAsFixed(4)}°'
+                                      : '--.----°, --.----°',
+                                  style: TextStyle(
+                                    color: textColor,
+                                    fontSize: 11.0,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                             ],
@@ -324,22 +334,49 @@ class GeoStampOverlay extends StatelessWidget {
                               Icon(
                                 Icons.access_time_filled,
                                 size: 11,
-                                color: iconColor == Colors.white70
-                                    ? Colors.orangeAccent
-                                    : iconColor,
+                                color: isClockTampered
+                                    ? Colors.redAccent
+                                    : (iconColor == Colors.white70
+                                        ? Colors.orangeAccent
+                                        : iconColor),
                               ),
                               const SizedBox(width: 4),
                               Expanded(
                                 child: Text(
                                   effectiveDateTime,
                                   style: TextStyle(
-                                    color: textColor,
+                                    color: isClockTampered
+                                        ? Colors.redAccent
+                                        : textColor,
                                     fontSize: 11.0,
-                                    fontWeight: FontWeight.w500,
+                                    fontWeight: isClockTampered
+                                        ? FontWeight.bold
+                                        : FontWeight.w500,
                                   ),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
+                              if (isClockTampered) ...[
+                                const SizedBox(width: 4),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 4, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: Colors.red.withOpacity(0.25),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                        color: Colors.redAccent, width: 0.6),
+                                  ),
+                                  child: const Text(
+                                    '⚠ CLOCK TAMPERED',
+                                    style: TextStyle(
+                                      fontSize: 8.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.redAccent,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
 
@@ -355,12 +392,15 @@ class GeoStampOverlay extends StatelessWidget {
                                     : iconColor,
                               ),
                               const SizedBox(width: 4),
-                              Text(
-                                '$altitudeValue$altitudeUnit above sea level',
-                                style: TextStyle(
-                                  color: textColor,
-                                  fontSize: 11.0,
-                                  fontWeight: FontWeight.w500,
+                              Flexible(
+                                child: Text(
+                                  '$altitudeValue$altitudeUnit above sea level',
+                                  style: TextStyle(
+                                    color: textColor,
+                                    fontSize: 11.0,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                             ],
@@ -528,6 +568,45 @@ class GeoStampOverlay extends StatelessWidget {
                     ),
                   ),
                 ),
+
+                // ----------------------------------------------------
+                // RIGHT SECTION: Scannable Verification QR Code & Verified Pill
+                // ----------------------------------------------------
+                if (showVerifiedBadge)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8, top: 4, bottom: 4),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildVerificationPill(),
+                        const SizedBox(height: 4),
+                        Container(
+                          width: 48,
+                          height: 48,
+                          padding: const EdgeInsets.all(3),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(6),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.2),
+                                blurRadius: 3,
+                                offset: const Offset(0, 1),
+                              ),
+                            ],
+                          ),
+                          child: QrImageView(
+                            key: ValueKey(_qrPayload),
+                            data: _qrPayload,
+                            version: QrVersions.auto,
+                            errorCorrectionLevel: QrErrorCorrectLevel.L,
+                            padding: EdgeInsets.zero,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
               ],
             ),
           ),
@@ -536,72 +615,126 @@ class GeoStampOverlay extends StatelessWidget {
     );
   }
 
-  Widget _buildGpsFreshnessWidget() {
-    final int secAgo = lastGpsFixTime != null
-        ? DateTime.now().difference(lastGpsFixTime!).inSeconds.clamp(0, 999)
-        : 0;
+  String get _qrPayload {
+    final hasFix = latitude != 0.0 || longitude != 0.0;
+    final latStr = hasFix ? latitude.toStringAsFixed(6) : '0.000000';
+    final lngStr = hasFix ? longitude.toStringAsFixed(6) : '0.000000';
+    final String status;
+    if (isClockTampered) {
+      status = 'TAMPER WARNING (CLOCK TAMPERED)';
+    } else if (isMockLocation) {
+      status = 'MOCK GPS WARNING';
+    } else if (hasFix) {
+      status = 'VERIFIED (NO MOCK)';
+    } else {
+      status = 'ACQUIRING GPS';
+    }
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        if (lastGpsFixTime != null)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-            decoration: BoxDecoration(
-              color: Colors.black38,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 6,
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: (secAgo <= 15 && !isRefreshingGps)
-                        ? Colors.greenAccent
-                        : Colors.amberAccent,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  isRefreshingGps ? 'Locating...' : 'Updated ${secAgo}s ago',
-                  style: const TextStyle(
-                    fontSize: 9.5,
-                    color: Colors.white70,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
+    final clockTag = isClockTampered
+        ? 'TAMPERED'
+        : (timeSourceLabel ?? (isSatelliteTime ? 'SAT' : 'SYS'));
+
+    final String hashTag;
+    if (verificationHash != null && verificationHash!.isNotEmpty) {
+      hashTag = verificationHash!;
+    } else if (hasFix) {
+      final raw =
+          '$latStr|$lngStr|$formattedDateTime|$isMockLocation|$isClockTampered';
+      hashTag = sha256
+          .convert(utf8.encode(raw))
+          .toString()
+          .substring(0, 12)
+          .toUpperCase();
+    } else {
+      hashTag = 'LIVE';
+    }
+    final effectiveIncludeMaps = settings?.includeMapsLink ?? includeMapsLink;
+    final effectiveSettings = settings ?? AppSettings();
+    final timeStr = formattedDateTime.isNotEmpty
+        ? formattedDateTime
+        : effectiveSettings.formatDateTime(DateTime.utc(2026));
+
+    final tamperLine = isClockTampered ? 'WARN: CLOCK TAMPERED\n' : '';
+
+    if (effectiveIncludeMaps && hasFix) {
+      return 'https://maps.google.com/?q=$latStr,$lngStr\n'
+          'STATUS: $status | ID:$hashTag ($clockTag)\n'
+          '$tamperLine'
+          'GPS: $latStr,$lngStr\n'
+          'TIME: $timeStr';
+    }
+    return 'STATUS: $status | ID:$hashTag ($clockTag)\n'
+        '$tamperLine'
+        'GPS: $latStr,$lngStr\n'
+        'TIME: $timeStr';
+  }
+
+  Widget _buildVerificationPill() {
+    if (isClockTampered) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+        decoration: BoxDecoration(
+          color: Colors.red.withOpacity(0.28),
+          border: Border.all(
+            color: Colors.redAccent,
+            width: 0.8,
           ),
-        if (onRefreshGps != null) ...[
-          const SizedBox(width: 2),
-          GestureDetector(
-            onTap: isRefreshingGps ? null : onRefreshGps,
-            behavior: HitTestBehavior.opaque,
-            child: Padding(
-              padding: const EdgeInsets.all(4),
-              child: isRefreshingGps
-                  ? const SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.5,
-                        color: Colors.amberAccent,
-                      ),
-                    )
-                  : const Icon(
-                      Icons.my_location,
-                      size: 14,
-                      color: Colors.amberAccent,
-                    ),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.warning_amber_rounded,
+              size: 12,
+              color: Colors.redAccent,
+            ),
+            SizedBox(width: 3),
+            Text(
+              '⚠ CLOCK TAMPERED',
+              style: TextStyle(
+                fontSize: 9.0,
+                fontWeight: FontWeight.w700,
+                color: Colors.redAccent,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final isMock = isMockLocation;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+      decoration: BoxDecoration(
+        color: isMock
+            ? Colors.red.withOpacity(0.28)
+            : Colors.green.withOpacity(0.25),
+        border: Border.all(
+          color: isMock ? Colors.redAccent : Colors.greenAccent,
+          width: 0.8,
+        ),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isMock ? Icons.warning_amber_rounded : Icons.verified,
+            size: 12,
+            color: isMock ? Colors.redAccent : Colors.greenAccent,
+          ),
+          const SizedBox(width: 3),
+          Text(
+            isMock ? 'Mock GPS' : 'GPS Verified',
+            style: TextStyle(
+              fontSize: 9.5,
+              fontWeight: FontWeight.w700,
+              color: isMock ? Colors.redAccent : Colors.greenAccent,
             ),
           ),
         ],
-      ],
+      ),
     );
   }
 }

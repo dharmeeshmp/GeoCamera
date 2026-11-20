@@ -4,13 +4,19 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../main.dart';
 import '../models/ad_config.dart';
 import '../models/app_settings.dart';
+import '../services/app_localizations.dart';
 import '../services/review_service.dart';
 import '../widgets/geo_stamp_overlay.dart';
 
 class SettingsScreen extends StatefulWidget {
   final AppSettings settings;
+
+  // Custom B2B & Support Contact Information
+  static const String businessEmail = 'sales@yourcompany.com';
+  static const String businessWhatsApp = '919000000000'; // Country code + number without '+'
 
   const SettingsScreen({
     super.key,
@@ -22,6 +28,9 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  static const String _businessEmail = SettingsScreen.businessEmail;
+  static const String _businessWhatsApp = SettingsScreen.businessWhatsApp;
+
   BannerAd? _bannerAd;
   bool _isBannerLoaded = false;
 
@@ -75,53 +84,82 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final s = widget.settings;
+    return ValueListenableBuilder<Locale>(
+      valueListenable: AppLocaleController.localeNotifier,
+      builder: (context, locale, _) {
+        final theme = Theme.of(context);
+        final isDark = theme.brightness == Brightness.dark;
+        final s = widget.settings;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF5F6FA),
-      appBar: AppBar(
-        title: const Text(
-          'Settings',
-          style: TextStyle(
-            color: Color(0xFF1E293B),
-            fontWeight: FontWeight.bold,
-            fontSize: 18,
+        return Scaffold(
+          backgroundColor: theme.scaffoldBackgroundColor,
+          appBar: AppBar(
+            title: Text(
+              tr('settings'),
+              style: TextStyle(
+                color: theme.colorScheme.onSurface,
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+              ),
+            ),
+            backgroundColor: theme.appBarTheme.backgroundColor,
+            foregroundColor: theme.colorScheme.onSurface,
+            elevation: 0.5,
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back_ios_new, size: 20),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
           ),
-        ),
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF1E293B),
-        elevation: 0.5,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, size: 20),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        children: [
-          // ====================================================
-          // SECTION 1: SELECT TEMPLATE (2 Visual Preview Cards)
-          // ====================================================
-          _buildSectionHeader('SELECT TEMPLATE'),
-          _buildTemplatePreviewCard(
-            title: 'Template 1 (Translucent Dark)',
-            subtitle: 'Translucent dark glass card with white telemetry',
-            index: 0,
-            isSelected: s.templateIndex == 0,
-          ),
-          const SizedBox(height: 8),
-          _buildTemplatePreviewCard(
-            title: 'Template 2 (Solid High-Contrast Dark)',
-            subtitle: 'Solid black background with high-contrast amber accents',
-            index: 1,
-            isSelected: s.templateIndex == 1,
-          ),
-          const SizedBox(height: 20),
+          body: ListView(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            children: [
+              // ====================================================
+              // SECTION 0: APPEARANCE (Theme Mode Toggle)
+              // ====================================================
+              _buildSectionHeader(tr('appearance').toUpperCase()),
+              _buildCard(
+                children: [
+                  _buildSwitchTile(
+                    icon: isDark ? Icons.dark_mode : Icons.light_mode,
+                    iconColor: isDark ? Colors.blueAccent : Colors.amber,
+                    title: tr('dark_mode'),
+                    subtitle: tr('dark_mode_desc'),
+                    value: appThemeNotifier.value == ThemeMode.dark,
+                    onChanged: (val) async {
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.setBool('is_dark_mode', val);
+                      appThemeNotifier.value =
+                          val ? ThemeMode.dark : ThemeMode.light;
+                      setState(() {});
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
 
-          // ====================================================
-          // SECTION 2: CAMERA SETTINGS
-          // ====================================================
-          _buildSectionHeader('CAMERA SETTINGS'),
+              // ====================================================
+              // SECTION 1: SELECT TEMPLATE (2 Visual Preview Cards)
+              // ====================================================
+              _buildSectionHeader(tr('stamp_template').toUpperCase()),
+              _buildTemplatePreviewCard(
+                title: 'Template 1 (Translucent Dark)',
+                subtitle: 'Translucent dark glass card with white telemetry',
+                index: 0,
+                isSelected: s.templateIndex == 0,
+              ),
+              const SizedBox(height: 8),
+              _buildTemplatePreviewCard(
+                title: 'Template 2 (Solid High-Contrast Dark)',
+                subtitle: 'Solid black background with high-contrast amber accents',
+                index: 1,
+                isSelected: s.templateIndex == 1,
+              ),
+              const SizedBox(height: 20),
+
+              // ====================================================
+              // SECTION 2: CAMERA SETTINGS
+              // ====================================================
+              _buildSectionHeader(tr('camera_settings').toUpperCase()),
           _buildCard(
             children: [
               _buildSwitchTile(
@@ -142,14 +180,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _buildDivider(),
               _buildActionTile(
                 icon: Icons.grid_on,
-                title: 'Camera Grid',
+                title: tr('grid_overlay'),
                 subtitle: _getGridModeSubtitle(s.cameraGridMode),
                 onTap: _showGridModeDialog,
               ),
               _buildDivider(),
               _buildSwitchTile(
                 icon: Icons.straighten,
-                title: 'Level Indicator',
+                title: tr('horizon_level'),
                 subtitle: 'Show live horizon & tilt bubble level',
                 value: s.showHorizonLevel,
                 onChanged: (v) async {
@@ -161,14 +199,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _buildDivider(),
               _buildSwitchTile(
                 icon: Icons.compress,
-                title: 'Image Compression',
-                subtitle:
-                    'Optimize photo size (~1.2 MB) for fast sharing; turn off for full-size photos',
+                title: tr('high_quality_capture'),
+                subtitle: tr('high_quality_desc'),
                 value: s.compressImages,
                 onChanged: (v) async {
                   final prefs = await SharedPreferences.getInstance();
                   await prefs.setBool('compress_images', v);
                   setState(() => s.update(compressImages: v));
+                },
+              ),
+              _buildDivider(),
+              _buildSwitchTile(
+                icon: Icons.verified_user,
+                iconColor: Colors.greenAccent,
+                title: tr('verified_capture_badge'),
+                subtitle: tr('verified_badge_desc'),
+                value: s.showVerifiedBadge,
+                onChanged: (v) async {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setBool('show_verified_badge', v);
+                  setState(() => s.update(showVerifiedBadge: v));
+                },
+              ),
+              _buildDivider(),
+              _buildSwitchTile(
+                icon: Icons.map_outlined,
+                iconColor: Colors.blueAccent,
+                title: tr('include_maps_link'),
+                subtitle: tr('include_maps_desc'),
+                value: s.includeMapsLink,
+                onChanged: (v) async {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setBool('include_maps_link', v);
+                  setState(() => s.update(includeMapsLink: v));
                 },
               ),
             ],
@@ -178,7 +241,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // ====================================================
           // SECTION 3: PICTURE SETTINGS
           // ====================================================
-          _buildSectionHeader('PICTURE SETTINGS'),
+          _buildSectionHeader(tr('map_stamp_settings').toUpperCase()),
           _buildCard(
             children: [
               _buildActionTile(
@@ -301,12 +364,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // ====================================================
           // SECTION 4: APP SETTINGS
           // ====================================================
-          _buildSectionHeader('APP SETTINGS'),
+          _buildSectionHeader(tr('settings').toUpperCase()),
           _buildCard(
             children: [
               _buildActionTile(
                 icon: Icons.location_on,
-                title: 'Address',
+                title: tr('custom_address'),
                 subtitle: s.customAddress.isNotEmpty
                     ? s.customAddress
                     : 'Display your address here',
@@ -322,8 +385,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _buildDivider(),
               _buildActionTile(
                 icon: Icons.language,
-                title: 'Language',
-                subtitle: 'Current: ${s.appLanguage}',
+                title: tr('language'),
+                subtitle: AppLocaleController.currentLanguageOption.nativeName,
                 onTap: _showLanguageDialog,
               ),
             ],
@@ -331,9 +394,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 20),
 
           // ====================================================
-          // SECTION 5: ABOUT
+          // SECTION 5: ENTERPRISE & TEAMS
           // ====================================================
-          _buildSectionHeader('ABOUT'),
+          _buildSectionHeader(tr('business_branding').toUpperCase()),
+          _buildCard(
+            children: [
+              _buildActionTile(
+                icon: Icons.business_center,
+                iconColor: isDark ? Colors.amberAccent : Colors.orange.shade800,
+                title: tr('business_branding'),
+                subtitle: tr('business_branding_desc'),
+                onTap: _showBusinessInquirySheet,
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+
+          // ====================================================
+          // SECTION 6: ABOUT
+          // ====================================================
+          _buildSectionHeader(tr('about_support').toUpperCase()),
           _buildCard(
             children: [
               _buildActionTile(
@@ -358,26 +438,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _buildDivider(),
               _buildActionTile(
                 icon: Icons.info,
-                title: 'Privacy Policy',
+                title: tr('privacy_policy'),
                 subtitle: 'Read our privacy policy',
                 onTap: _showPrivacyPolicyDialog,
               ),
               _buildDivider(),
               _buildActionTile(
                 icon: Icons.article,
-                title: 'Terms & Conditions',
+                title: tr('terms_service'),
                 subtitle: 'Read our terms & conditions',
                 onTap: _showTermsDialog,
               ),
               _buildDivider(),
               _buildActionTile(
-                icon: Icons.phone,
+                icon: Icons.support_agent,
                 title: 'Contact Support',
                 subtitle: 'Get help or send us feedback',
                 onTap: () async {
-                  final uri = Uri(scheme: 'tel', path: '+910000000000');
+                  final uri = Uri(
+                    scheme: 'mailto',
+                    path: _businessEmail,
+                    query: 'subject=GPS%20Map%20Camera%20Support',
+                  );
                   if (await canLaunchUrl(uri)) {
-                    await launchUrl(uri);
+                    await launchUrl(uri,
+                        mode: LaunchMode.externalApplication);
                   }
                 },
               ),
@@ -397,6 +482,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ),
     );
+      },
+    );
   }
 
   // ====================================================
@@ -404,12 +491,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ====================================================
 
   Widget _buildSectionHeader(String title) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Padding(
       padding: const EdgeInsets.only(left: 4, bottom: 8),
       child: Text(
         title,
-        style: const TextStyle(
-          color: Color(0xFF64748B),
+        style: TextStyle(
+          color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
           fontSize: 12,
           fontWeight: FontWeight.w700,
           letterSpacing: 0.8,
@@ -419,13 +507,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildCard({required List<Widget> children}) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
         borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isDark
+              ? Colors.white.withOpacity(0.08)
+              : Colors.black.withOpacity(0.06),
+          width: 1.0,
+        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withOpacity(isDark ? 0.25 : 0.04),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -441,12 +536,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildDivider() {
-    return const Divider(
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Divider(
       height: 1,
       thickness: 1,
       indent: 56,
       endIndent: 16,
-      color: Color(0xFFF1F5F9),
+      color: isDark ? Colors.white.withOpacity(0.08) : const Color(0xFFF1F5F9),
     );
   }
 
@@ -456,6 +552,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required int index,
     required bool isSelected,
   }) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     // Generate a dedicated template settings object for preview
     final previewSettings = AppSettings();
     previewSettings.update(
@@ -480,17 +579,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
       },
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: isSelected ? Colors.blue : Colors.grey.shade300,
+            color: isSelected
+                ? (isDark ? Colors.lightBlueAccent : Colors.blue)
+                : (isDark
+                    ? Colors.white.withOpacity(0.12)
+                    : Colors.grey.shade300),
             width: isSelected ? 2.0 : 1.0,
           ),
           boxShadow: [
             BoxShadow(
               color: isSelected
-                  ? Colors.blue.withOpacity(0.12)
-                  : Colors.black.withOpacity(0.03),
+                  ? (isDark
+                      ? Colors.lightBlueAccent.withOpacity(0.18)
+                      : Colors.blue.withOpacity(0.12))
+                  : Colors.black.withOpacity(isDark ? 0.25 : 0.03),
               blurRadius: 8,
               offset: const Offset(0, 2),
             ),
@@ -507,7 +612,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     isSelected
                         ? Icons.check_circle
                         : Icons.radio_button_unchecked,
-                    color: isSelected ? Colors.blue : Colors.grey.shade400,
+                    color: isSelected
+                        ? (isDark ? Colors.lightBlueAccent : Colors.blue)
+                        : (isDark ? Colors.white38 : Colors.grey.shade400),
                     size: 20,
                   ),
                   const SizedBox(width: 8),
@@ -521,15 +628,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
                             color: isSelected
-                                ? Colors.blue.shade900
-                                : const Color(0xFF1E293B),
+                                ? (isDark
+                                    ? Colors.lightBlueAccent
+                                    : Colors.blue.shade900)
+                                : theme.colorScheme.onSurface,
                           ),
                         ),
                         Text(
                           subtitle,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 12,
-                            color: Color(0xFF64748B),
+                            color: theme.colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ],
@@ -564,25 +673,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildSwitchTile({
     required IconData icon,
+    Color? iconColor,
     required String title,
     required String subtitle,
     required bool value,
     required ValueChanged<bool> onChanged,
   }) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return SwitchListTile.adaptive(
-      secondary: Icon(icon, color: Colors.blue),
-      activeColor: Colors.blue,
+      secondary: Icon(
+        icon,
+        color: iconColor ?? (isDark ? Colors.lightBlueAccent : Colors.blue),
+      ),
+      activeColor: isDark ? Colors.lightBlueAccent : Colors.blue,
       title: Text(
         title,
-        style: const TextStyle(
-          color: Color(0xFF1E293B),
+        style: TextStyle(
+          color: theme.colorScheme.onSurface,
           fontWeight: FontWeight.w600,
           fontSize: 15,
         ),
       ),
       subtitle: Text(
         subtitle,
-        style: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+        style: TextStyle(
+          color: theme.colorScheme.onSurfaceVariant,
+          fontSize: 13,
+        ),
       ),
       value: value,
       onChanged: onChanged,
@@ -591,27 +709,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildActionTile({
     required IconData icon,
+    Color? iconColor,
     required String title,
     required String subtitle,
     required VoidCallback onTap,
   }) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return ListTile(
-      leading: Icon(icon, color: Colors.blue),
+      leading: Icon(
+        icon,
+        color: iconColor ?? (isDark ? Colors.lightBlueAccent : Colors.blue),
+      ),
       title: Text(
         title,
-        style: const TextStyle(
-          color: Color(0xFF1E293B),
+        style: TextStyle(
+          color: theme.colorScheme.onSurface,
           fontWeight: FontWeight.w600,
           fontSize: 15,
         ),
       ),
       subtitle: Text(
         subtitle,
-        style: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+        style: TextStyle(
+          color: theme.colorScheme.onSurfaceVariant,
+          fontSize: 13,
+        ),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+      trailing: Icon(
+        Icons.chevron_right,
+        color: isDark ? Colors.white38 : Colors.grey,
+      ),
       onTap: onTap,
     );
   }
@@ -713,7 +843,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildMapTypeOption(BuildContext ctx, String type, String desc) {
-    final isSelected = widget.settings.mapType == type;
     return RadioListTile<String>(
       title: Text(type, style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Text(desc, style: const TextStyle(fontSize: 12)),
@@ -947,43 +1076,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text(
-            'Select App Language',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(
+            tr('select_language'),
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildLanguageOption(ctx, 'English'),
-              _buildLanguageOption(ctx, 'Tamil'),
-              _buildLanguageOption(ctx, 'Hindi'),
-            ],
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: AppLocaleController.supportedLanguages.length,
+              itemBuilder: (context, index) {
+                final lang = AppLocaleController.supportedLanguages[index];
+                final isSelected =
+                    AppLocaleController.localeNotifier.value.languageCode ==
+                        lang.code;
+                return RadioListTile<String>(
+                  title: Text(
+                    '${lang.nativeName} (${lang.name})',
+                    style: TextStyle(
+                      fontWeight:
+                          isSelected ? FontWeight.bold : FontWeight.w500,
+                    ),
+                  ),
+                  value: lang.code,
+                  groupValue:
+                      AppLocaleController.localeNotifier.value.languageCode,
+                  activeColor: Colors.blue,
+                  onChanged: (val) async {
+                    if (val != null) {
+                      await AppLocaleController.setLocale(val);
+                      widget.settings.update(appLanguage: val);
+                      if (mounted) setState(() {});
+                      Navigator.of(ctx).pop();
+                    }
+                  },
+                );
+              },
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel', style: TextStyle(color: Colors.blue)),
+              child:
+                  Text(tr('cancel'), style: const TextStyle(color: Colors.blue)),
             ),
           ],
         );
-      },
-    );
-  }
-
-  Widget _buildLanguageOption(BuildContext ctx, String lang) {
-    return RadioListTile<String>(
-      title: Text(lang, style: const TextStyle(fontWeight: FontWeight.w600)),
-      value: lang,
-      groupValue: widget.settings.appLanguage,
-      activeColor: Colors.blue,
-      onChanged: (val) {
-        if (val != null) {
-          setState(() {
-            widget.settings.update(appLanguage: val);
-          });
-          Navigator.of(ctx).pop();
-        }
       },
     );
   }
@@ -1001,14 +1141,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Text('Privacy Policy', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             ],
           ),
-          content: const SingleChildScrollView(
+          content: SingleChildScrollView(
             child: Text(
               'Your privacy is extremely important to us.\n\n'
               '1. Camera & Audio: Camera and microphone access are used exclusively within the app to capture photos and record videos.\n\n'
               '2. Location & Sensors: GPS location, altitude, compass orientation, and magnetometer data are gathered solely in real-time to stamp geographical metadata onto your photos and videos.\n\n'
               '3. Data Storage: All photos and videos remain on your local device. We do not transmit or store your personal media on external servers without your explicit action.\n\n'
               '4. Analytics & Ads: Non-personally identifiable diagnostic information and standard AdMob advertisements may be shown in accordance with Google Play policies.',
-              style: TextStyle(fontSize: 13, height: 1.4, color: Color(0xFF334155)),
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.4,
+                color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
           actions: [
@@ -1040,14 +1184,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Text('Terms & Conditions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             ],
           ),
-          content: const SingleChildScrollView(
+          content: SingleChildScrollView(
             child: Text(
               'By using GPS Map Camera, you agree to the following terms:\n\n'
               '1. License: You are granted a personal, non-exclusive license to use the application for capturing geostamped media.\n\n'
               '2. GPS Accuracy: Telemetry (coordinates, altitude, compass, magnetic field) is provided as-is from your hardware sensors. We do not guarantee precision for safety-critical or survey-certified applications.\n\n'
               '3. Lawful Use: You agree to comply with all applicable local privacy and photographic laws when capturing people and locations.\n\n'
               '4. Modifications: We reserve the right to update the application features and terms as needed to enhance user experience.',
-              style: TextStyle(fontSize: 13, height: 1.4, color: Color(0xFF334155)),
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.4,
+                color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
           actions: [
@@ -1061,6 +1209,150 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: const Text('Close'),
             ),
           ],
+        );
+      },
+    );
+  }
+
+  void _showBusinessInquirySheet() {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.18),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.business_center,
+                          color: Colors.amber, size: 24),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Custom Branding & Team License',
+                        style: TextStyle(
+                          color: theme.colorScheme.onSurface,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Equip your field surveyors, site engineers, and inspection teams with custom company watermarks, logos, tailored stamp templates, and volume licensing.',
+                  style: TextStyle(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontSize: 13.5,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.chat, color: Colors.green, size: 22),
+                  ),
+                  title: Text(
+                    'Chat on WhatsApp',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurface,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                    ),
+                  ),
+                  subtitle: Text(
+                    '+$_businessWhatsApp',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontSize: 12.5,
+                    ),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final message = Uri.encodeComponent(
+                        'Hi! I am interested in Custom Company Branding / Team Licensing for GPS Map Camera.');
+                    final uri = Uri.parse(
+                        'https://wa.me/$_businessWhatsApp?text=$message');
+                    try {
+                      await launchUrl(uri,
+                          mode: LaunchMode.externalApplication);
+                    } catch (e) {
+                      debugPrint('Error launching WhatsApp: $e');
+                    }
+                  },
+                ),
+                const Divider(),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.email_outlined,
+                        color: Colors.blue, size: 22),
+                  ),
+                  title: Text(
+                    'Email Sales Team',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurface,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                    ),
+                  ),
+                  subtitle: Text(
+                    _businessEmail,
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontSize: 12.5,
+                    ),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final subject = Uri.encodeComponent(
+                        'Enterprise Inquiry - GPS Map Camera');
+                    final body = Uri.encodeComponent(
+                        'Hello Sales Team,\n\nI am interested in Custom Company Branding and Team Licensing for GPS Map Camera.\n\nCompany Name:\nTeam Size:\nRequirements:\n');
+                    final uri =
+                        Uri.parse('mailto:$_businessEmail?subject=$subject&body=$body');
+                    try {
+                      await launchUrl(uri,
+                          mode: LaunchMode.externalApplication);
+                    } catch (e) {
+                      debugPrint('Error launching Email: $e');
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
         );
       },
     );

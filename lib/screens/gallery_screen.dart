@@ -1,13 +1,17 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:in_app_review/in_app_review.dart';
 import 'package:intl/intl.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
+import '../main.dart';
 import '../models/ad_config.dart';
+import '../services/app_localizations.dart';
+import '../services/gis_export_service.dart';
 import '../services/media_storage_service.dart';
 import '../services/pdf_report_service.dart';
 
@@ -82,7 +86,9 @@ class _GalleryScreenState extends State<GalleryScreen>
       ),
       nativeTemplateStyle: NativeTemplateStyle(
         templateType: TemplateType.medium,
-        mainBackgroundColor: const Color(0xFF1E1E1E),
+        mainBackgroundColor: appThemeNotifier.value == ThemeMode.dark
+            ? const Color(0xFF1E1E1E)
+            : Colors.white,
         cornerRadius: 12.0,
       ),
     )..load();
@@ -165,21 +171,25 @@ class _GalleryScreenState extends State<GalleryScreen>
 
     if (!mounted) return;
 
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.picture_as_pdf, color: Colors.blueAccent),
-            SizedBox(width: 8),
+            const Icon(Icons.picture_as_pdf, color: Colors.blueAccent),
+            const SizedBox(width: 8),
             Text(
               'Generate PDF Report',
               style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold),
+                color: theme.colorScheme.onSurface,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ],
         ),
@@ -189,35 +199,32 @@ class _GalleryScreenState extends State<GalleryScreen>
             children: [
               TextField(
                 controller: titleController,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
+                style: TextStyle(color: theme.colorScheme.onSurface),
+                decoration: InputDecoration(
                   labelText: 'Report Title',
-                  labelStyle: TextStyle(color: Colors.white70),
-                  enabledBorder: UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.white24)),
+                  labelStyle:
+                      TextStyle(color: theme.colorScheme.onSurfaceVariant),
                 ),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: inspectorController,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
+                style: TextStyle(color: theme.colorScheme.onSurface),
+                decoration: InputDecoration(
                   labelText: 'Company / Inspector Name',
-                  labelStyle: TextStyle(color: Colors.white70),
-                  enabledBorder: UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.white24)),
+                  labelStyle:
+                      TextStyle(color: theme.colorScheme.onSurfaceVariant),
                 ),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: noteController,
-                style: const TextStyle(color: Colors.white),
+                style: TextStyle(color: theme.colorScheme.onSurface),
                 maxLines: 2,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'Project Note',
-                  labelStyle: TextStyle(color: Colors.white70),
-                  enabledBorder: UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.white24)),
+                  labelStyle:
+                      TextStyle(color: theme.colorScheme.onSurfaceVariant),
                 ),
               ),
             ],
@@ -226,8 +233,10 @@ class _GalleryScreenState extends State<GalleryScreen>
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child:
-                const Text('Cancel', style: TextStyle(color: Colors.white60)),
+            child: Text(
+              'Cancel',
+              style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -247,19 +256,22 @@ class _GalleryScreenState extends State<GalleryScreen>
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(
+      builder: (_) => Center(
         child: Card(
-          color: Color(0xFF1E1E1E),
+          color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
           child: Padding(
-            padding: EdgeInsets.all(24),
+            padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                CircularProgressIndicator(color: Colors.blueAccent),
-                SizedBox(height: 16),
+                const CircularProgressIndicator(color: Colors.blueAccent),
+                const SizedBox(height: 16),
                 Text(
                   'Building PDF Report...',
-                  style: TextStyle(color: Colors.white, fontSize: 14),
+                  style: TextStyle(
+                    color: theme.colorScheme.onSurface,
+                    fontSize: 14,
+                  ),
                 ),
               ],
             ),
@@ -282,6 +294,22 @@ class _GalleryScreenState extends State<GalleryScreen>
 
       if (mounted) {
         Navigator.pop(context); // Dismiss loading spinner
+      }
+
+      // Increment PDF reports generated count & trigger Google Play in-app review at milestones 2 and 5
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final int count =
+            (prefs.getInt('pdf_reports_generated_count') ?? 0) + 1;
+        await prefs.setInt('pdf_reports_generated_count', count);
+        if (count == 2 || count == 5) {
+          final InAppReview inAppReview = InAppReview.instance;
+          if (await inAppReview.isAvailable()) {
+            await inAppReview.requestReview();
+          }
+        }
+      } catch (e) {
+        debugPrint('Silent in-app review trigger failure: $e');
       }
 
       await Share.shareXFiles(
@@ -308,23 +336,217 @@ class _GalleryScreenState extends State<GalleryScreen>
     }
   }
 
-  Future<void> _syncSinglePhoto(File file) async {
+  Future<void> _showGisExportSheet() async {
+    if (_selectedPhotoPaths.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select at least one photo to export.'),
+          backgroundColor: Color(0xFF1E293B),
+        ),
+      );
+      return;
+    }
+
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.public,
+                          color: Colors.tealAccent, size: 24),
+                      const SizedBox(width: 10),
+                      Text(
+                        'GIS Export (${_selectedPhotoPaths.length} items)',
+                        style: TextStyle(
+                          color: theme.colorScheme.onSurface,
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.map, color: Colors.blueAccent),
+                  ),
+                  title: Text(
+                    'Export Google Earth (.KML)',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurface,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  subtitle: Text(
+                    'Placemark pins with photo info and connected survey route for Google Earth & GIS',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _exportGisFiles(isKml: true);
+                  },
+                ),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.teal.withOpacity(0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.table_chart,
+                        color: Colors.teal),
+                  ),
+                  title: Text(
+                    'Export GIS Spreadsheet (.CSV)',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurface,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  subtitle: Text(
+                    'RFC-4180 spreadsheet with coordinates, timestamps, and hashes for Excel & CAD',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _exportGisFiles(isKml: false);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _exportGisFiles({required bool isKml}) async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    // Show loading spinner dialog
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(
+      builder: (_) => Center(
         child: Card(
-          color: Color(0xFF1E1E1E),
+          color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
           child: Padding(
-            padding: EdgeInsets.all(24),
+            padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                CircularProgressIndicator(color: Colors.blueAccent),
-                SizedBox(height: 16),
+                CircularProgressIndicator(
+                  color: isKml ? Colors.blueAccent : Colors.teal,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  isKml
+                      ? 'Generating KML Survey File...'
+                      : 'Generating GIS CSV Spreadsheet...',
+                  style: TextStyle(
+                    color: theme.colorScheme.onSurface,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    try {
+      final paths = _selectedPhotoPaths.toList();
+      final File exportFile;
+      final String shareTitle;
+
+      if (isKml) {
+        exportFile = await GisExportService.exportToKml(paths);
+        shareTitle = 'GPS Camera Survey Export (KML)';
+      } else {
+        exportFile = await GisExportService.exportToCsv(paths);
+        shareTitle = 'GPS Camera Survey Export (CSV)';
+      }
+
+      if (mounted) {
+        Navigator.pop(context); // Dismiss loading spinner
+      }
+
+      await Share.shareXFiles(
+        [XFile(exportFile.path)],
+        text: shareTitle,
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context); // Dismiss loading spinner if active
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to export GIS file: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _syncSinglePhoto(File file) async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => Center(
+        child: Card(
+          color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(color: Colors.blueAccent),
+                const SizedBox(height: 16),
                 Text(
                   'Fetching map & address...',
-                  style: TextStyle(color: Colors.white, fontSize: 14),
+                  style: TextStyle(
+                    color: theme.colorScheme.onSurface,
+                    fontSize: 14,
+                  ),
                 ),
               ],
             ),
@@ -377,12 +599,15 @@ class _GalleryScreenState extends State<GalleryScreen>
         .toList();
     if (pendingList.isEmpty) return;
 
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (_) => Center(
         child: Card(
-          color: const Color(0xFF1E1E1E),
+          color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
@@ -392,7 +617,10 @@ class _GalleryScreenState extends State<GalleryScreen>
                 const SizedBox(height: 16),
                 Text(
                   'Syncing ${pendingList.length} photos...',
-                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                  style: TextStyle(
+                    color: theme.colorScheme.onSurface,
+                    fontSize: 14,
+                  ),
                 ),
               ],
             ),
@@ -445,9 +673,12 @@ class _GalleryScreenState extends State<GalleryScreen>
 
   void _showItemContextMenu(File file, bool isVideo) {
     final bool isPendingSync = _pendingOfflinePaths.contains(file.path);
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
+      backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -461,21 +692,26 @@ class _GalleryScreenState extends State<GalleryScreen>
                 width: 36,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: Colors.white24,
+                  color: isDark ? Colors.white24 : Colors.black26,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
               if (isPendingSync)
                 ListTile(
                   leading: const Icon(Icons.sync, color: Colors.blueAccent),
-                  title: const Text(
+                  title: Text(
                     'Sync & Stamp Location',
                     style: TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.bold),
+                      color: theme.colorScheme.onSurface,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                  subtitle: const Text(
+                  subtitle: Text(
                     'Fetch address & burn live map tile onto photo',
-                    style: TextStyle(color: Colors.white60, fontSize: 12),
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
                   ),
                   onTap: () async {
                     Navigator.pop(ctx);
@@ -486,9 +722,9 @@ class _GalleryScreenState extends State<GalleryScreen>
                 ListTile(
                   leading: const Icon(Icons.picture_as_pdf,
                       color: Colors.amberAccent),
-                  title: const Text(
+                  title: Text(
                     'Create PDF Report',
-                    style: TextStyle(color: Colors.white),
+                    style: TextStyle(color: theme.colorScheme.onSurface),
                   ),
                   onTap: () {
                     Navigator.pop(ctx);
@@ -518,20 +754,32 @@ class _GalleryScreenState extends State<GalleryScreen>
   }
 
   Future<void> _deleteFile(File file) async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete File', style: TextStyle(color: Colors.white)),
-        content: const Text(
+        title: Text(
+          'Delete File',
+          style: TextStyle(
+            color: theme.colorScheme.onSurface,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: Text(
           'Are you sure you want to delete this media file?',
-          style: TextStyle(color: Colors.white70),
+          style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
+            child: Text(
+              'Cancel',
+              style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
@@ -548,20 +796,32 @@ class _GalleryScreenState extends State<GalleryScreen>
   }
 
   Future<void> _confirmDeletePdfReport(File file) async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete Report', style: TextStyle(color: Colors.white)),
-        content: const Text(
+        title: Text(
+          'Delete Report',
+          style: TextStyle(
+            color: theme.colorScheme.onSurface,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: Text(
           'Are you sure you want to delete this PDF inspection report?',
-          style: TextStyle(color: Colors.white70),
+          style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
+            child: Text(
+              'Cancel',
+              style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
@@ -600,121 +860,134 @@ class _GalleryScreenState extends State<GalleryScreen>
 
   @override
   Widget build(BuildContext context) {
-    final photoCount =
-        _mediaFiles.where((f) => !f.path.toLowerCase().endsWith('.mp4')).length;
+    return ValueListenableBuilder<Locale>(
+      valueListenable: AppLocaleController.localeNotifier,
+      builder: (context, locale, _) {
+        final theme = Theme.of(context);
+        final isDark = theme.brightness == Brightness.dark;
+        final photoCount = _mediaFiles
+            .where((f) => !f.path.toLowerCase().endsWith('.mp4'))
+            .length;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF101010),
-      appBar: AppBar(
-        title: Text(
-          _isSelectionMode
-              ? '${_selectedPhotoPaths.length} Selected'
-              : 'Captured Media',
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-        ),
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        leading: _isSelectionMode
-            ? IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: () {
-                  setState(() {
-                    _isSelectionMode = false;
-                    _selectedPhotoPaths.clear();
-                  });
-                },
-              )
-            : null,
-        actions: [
-          if (!_isSelectionMode &&
-              _pendingOfflinePaths.isNotEmpty &&
-              _tabController.index == 0)
-            TextButton.icon(
-              icon: const Icon(Icons.sync, color: Colors.amberAccent, size: 18),
-              label: Text(
-                'Sync (${_pendingOfflinePaths.length})',
-                style: const TextStyle(
-                  color: Colors.amberAccent,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                ),
-              ),
-              onPressed: _syncAllPendingPhotos,
-            ),
-          if (!_isSelectionMode && _tabController.index == 0)
-            IconButton(
-              icon: const Icon(Icons.picture_as_pdf),
-              tooltip: 'Create PDF Report',
-              onPressed: () {
-                setState(() {
-                  _isSelectionMode = true;
-                });
-              },
-            )
-          else if (_isSelectionMode && _tabController.index == 0) ...[
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  final photoFiles = _mediaFiles
-                      .where((f) => !f.path.toLowerCase().endsWith('.mp4'))
-                      .toList();
-                  if (_selectedPhotoPaths.length == photoFiles.length) {
-                    _selectedPhotoPaths.clear();
-                  } else {
-                    _selectedPhotoPaths.addAll(photoFiles.map((f) => f.path));
-                  }
-                });
-              },
-              child: Text(
-                _selectedPhotoPaths.length == photoCount
-                    ? 'Deselect All'
-                    : 'Select All',
-                style: const TextStyle(
-                  color: Colors.blueAccent,
-                  fontWeight: FontWeight.bold,
-                ),
+        return Scaffold(
+          backgroundColor: theme.scaffoldBackgroundColor,
+          appBar: AppBar(
+            title: Text(
+              _isSelectionMode
+                  ? '${_selectedPhotoPaths.length} ${tr('select_items')}'
+                  : tr('captured_media'),
+              style: TextStyle(
+                color: theme.colorScheme.onSurface,
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
               ),
             ),
-          ],
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(48),
-          child: Container(
-            color: Colors.black,
-            child: TabBar(
-              controller: _tabController,
-              indicatorColor: Colors.amberAccent,
-              indicatorWeight: 3,
-              labelColor: Colors.amberAccent,
-              unselectedLabelColor: Colors.white60,
-              labelStyle:
-                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-              unselectedLabelStyle:
-                  const TextStyle(fontWeight: FontWeight.normal, fontSize: 14),
-              tabs: [
-                const Tab(text: 'Media'),
-                Tab(
-                  text: _pdfReportFiles.isEmpty
-                      ? 'PDF Reports'
-                      : 'PDF Reports (${_pdfReportFiles.length})',
+            backgroundColor: theme.appBarTheme.backgroundColor,
+            foregroundColor: theme.colorScheme.onSurface,
+            elevation: 0.5,
+            leading: _isSelectionMode
+                ? IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () {
+                      setState(() {
+                        _isSelectionMode = false;
+                        _selectedPhotoPaths.clear();
+                      });
+                    },
+                  )
+                : null,
+            actions: [
+              if (!_isSelectionMode &&
+                  _pendingOfflinePaths.isNotEmpty &&
+                  _tabController.index == 0)
+                TextButton.icon(
+                  icon:
+                      const Icon(Icons.sync, color: Colors.amberAccent, size: 18),
+                  label: Text(
+                    '${tr('sync_and_stamp')} (${_pendingOfflinePaths.length})',
+                    style: const TextStyle(
+                      color: Colors.amberAccent,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                  onPressed: _syncAllPendingPhotos,
+                ),
+              if (!_isSelectionMode && _tabController.index == 0)
+                IconButton(
+                  icon: const Icon(Icons.picture_as_pdf),
+                  tooltip: tr('create_pdf_report'),
+                  onPressed: () {
+                    setState(() {
+                      _isSelectionMode = true;
+                    });
+                  },
+                )
+              else if (_isSelectionMode && _tabController.index == 0) ...[
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      final photoFiles = _mediaFiles
+                          .where((f) => !f.path.toLowerCase().endsWith('.mp4'))
+                          .toList();
+                      if (_selectedPhotoPaths.length == photoFiles.length) {
+                        _selectedPhotoPaths.clear();
+                      } else {
+                        _selectedPhotoPaths
+                            .addAll(photoFiles.map((f) => f.path));
+                      }
+                    });
+                  },
+                  child: Text(
+                    _selectedPhotoPaths.length == photoCount
+                        ? 'Deselect All'
+                        : 'Select All',
+                    style: const TextStyle(
+                      color: Colors.blueAccent,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ],
+            ],
+            bottom: PreferredSize(
+              preferredSize: const Size.fromHeight(48),
+              child: Container(
+                color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+                child: TabBar(
+                  controller: _tabController,
+                  indicatorColor: theme.colorScheme.primary,
+                  indicatorWeight: 3,
+                  labelColor: theme.colorScheme.primary,
+                  unselectedLabelColor:
+                      isDark ? Colors.white60 : const Color(0xFF64748B),
+                  labelStyle:
+                      const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  unselectedLabelStyle:
+                      const TextStyle(fontWeight: FontWeight.normal, fontSize: 14),
+                  tabs: [
+                    Tab(text: tr('captured_media')),
+                    Tab(
+                      text: _pdfReportFiles.isEmpty
+                          ? tr('pdf_reports')
+                          : '${tr('pdf_reports')} (${_pdfReportFiles.length})',
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
-      ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          _buildMediaTab(),
-          _buildPdfReportsTab(),
-        ],
-      ),
-      bottomNavigationBar: ((_isSelectionMode &&
-                  _selectedPhotoPaths.isNotEmpty &&
-                  _tabController.index == 0) ||
-              _isNativeAdLoaded ||
+          body: TabBarView(
+            controller: _tabController,
+            children: [
+              _buildMediaTab(),
+              _buildPdfReportsTab(),
+            ],
+          ),
+          bottomNavigationBar: ((_isSelectionMode &&
+                      _selectedPhotoPaths.isNotEmpty &&
+                      _tabController.index == 0) ||
+                  _isNativeAdLoaded ||
               _isBannerAdLoaded)
           ? SafeArea(
               top: false,
@@ -727,7 +1000,7 @@ class _GalleryScreenState extends State<GalleryScreen>
                       _tabController.index == 0)
                     Container(
                       padding: const EdgeInsets.all(8),
-                      color: const Color(0xFF1E1E1E),
+                      color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
                       child: SizedBox(
                         width: double.infinity,
                         height: 48,
@@ -754,16 +1027,22 @@ class _GalleryScreenState extends State<GalleryScreen>
 
                   // 2. High-Revenue Native Ad or Inline Adaptive Banner Ad
                   if (_isNativeAdLoaded && _nativeAd != null) ...[
-                    const Divider(height: 1, color: Colors.white12),
+                    Divider(
+                      height: 1,
+                      color: isDark ? Colors.white12 : Colors.black12,
+                    ),
                     SizedBox(
                       height: 260,
                       width: double.infinity,
                       child: AdWidget(ad: _nativeAd!),
                     ),
                   ] else if (_isBannerAdLoaded && _bannerAd != null) ...[
-                    const Divider(height: 1, color: Colors.white12),
+                    Divider(
+                      height: 1,
+                      color: isDark ? Colors.white12 : Colors.black12,
+                    ),
                     Container(
-                      color: const Color(0xFF101010),
+                      color: theme.scaffoldBackgroundColor,
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       height: _bannerAd!.size.height.toDouble() + 16,
                       alignment: Alignment.center,
@@ -779,6 +1058,8 @@ class _GalleryScreenState extends State<GalleryScreen>
             )
           : null,
     );
+      },
+    );
   }
 
   Widget _buildMediaTab() {
@@ -788,21 +1069,35 @@ class _GalleryScreenState extends State<GalleryScreen>
       );
     }
 
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     if (_mediaFiles.isEmpty) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.photo_library_outlined, size: 64, color: Colors.white24),
-            SizedBox(height: 12),
-            Text(
-              'No captured media yet',
-              style: TextStyle(color: Colors.white60, fontSize: 16),
+            Icon(
+              Icons.photo_library_outlined,
+              size: 64,
+              color: isDark ? Colors.white24 : Colors.black26,
             ),
-            SizedBox(height: 6),
+            const SizedBox(height: 12),
+            Text(
+              tr('no_media_yet'),
+              style: TextStyle(
+                color: theme.colorScheme.onSurface,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 6),
             Text(
               'Photos and videos with GPS stamps will appear here.',
-              style: TextStyle(color: Colors.white38, fontSize: 13),
+              style: TextStyle(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontSize: 13,
+              ),
             ),
           ],
         ),
@@ -1029,33 +1324,36 @@ class _GalleryScreenState extends State<GalleryScreen>
       );
     }
 
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     if (_pdfReportFiles.isEmpty) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: 32),
+          padding: const EdgeInsets.symmetric(horizontal: 32),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
                 Icons.picture_as_pdf_outlined,
                 size: 64,
-                color: Colors.white24,
+                color: isDark ? Colors.white24 : Colors.black26,
               ),
-              SizedBox(height: 12),
+              const SizedBox(height: 12),
               Text(
-                'No PDF reports yet',
+                tr('no_reports_yet'),
                 style: TextStyle(
-                  color: Colors.white60,
+                  color: theme.colorScheme.onSurface,
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              SizedBox(height: 6),
+              const SizedBox(height: 6),
               Text(
                 'Select photos in the Media tab to generate a site inspection report',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  color: Colors.white38,
+                  color: theme.colorScheme.onSurfaceVariant,
                   fontSize: 13,
                 ),
               ),
@@ -1089,11 +1387,14 @@ class _GalleryScreenState extends State<GalleryScreen>
         final subtitle = dateStr.isNotEmpty ? '$dateStr • $sizeStr' : sizeStr;
 
         return Card(
-          color: const Color(0xFF1E1E1E),
-          elevation: 2,
+          color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+          elevation: isDark ? 2 : 1,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: Colors.white10, width: 0.8),
+            side: BorderSide(
+              color: isDark ? Colors.white10 : Colors.black.withOpacity(0.06),
+              width: 0.8,
+            ),
           ),
           child: InkWell(
             borderRadius: BorderRadius.circular(12),
@@ -1139,8 +1440,8 @@ class _GalleryScreenState extends State<GalleryScreen>
                       children: [
                         Text(
                           filename,
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: theme.colorScheme.onSurface,
                             fontSize: 13.5,
                             fontWeight: FontWeight.bold,
                           ),
@@ -1150,8 +1451,8 @@ class _GalleryScreenState extends State<GalleryScreen>
                         const SizedBox(height: 4),
                         Text(
                           subtitle,
-                          style: const TextStyle(
-                            color: Colors.white60,
+                          style: TextStyle(
+                            color: theme.colorScheme.onSurfaceVariant,
                             fontSize: 11.5,
                           ),
                           maxLines: 1,
@@ -1161,8 +1462,11 @@ class _GalleryScreenState extends State<GalleryScreen>
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.share,
-                        color: Colors.white70, size: 20),
+                    icon: Icon(
+                      Icons.share,
+                      color: isDark ? Colors.white70 : const Color(0xFF475569),
+                      size: 20,
+                    ),
                     tooltip: 'Share Report',
                     onPressed: () async {
                       try {
@@ -1246,11 +1550,34 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   }
 
   Future<void> _shareMedia() async {
+    final prefs = await SharedPreferences.getInstance();
+    final bool includeMapsLink = prefs.getBool('include_maps_link') ?? true;
+
+    String shareText = widget.isVideo
+        ? 'Video captured with GPS Map Camera'
+        : 'Photo captured with GPS Map Camera';
+
+    if (includeMapsLink) {
+      final meta = await MediaStorageService.loadSidecarMetadata(widget.file);
+      final lat = meta?['lat'];
+      final lng = meta?['lng'];
+      if (lat is num && lng is num && (lat != 0.0 || lng != 0.0)) {
+        final latStr = lat.toDouble().toStringAsFixed(6);
+        final lngStr = lng.toDouble().toStringAsFixed(6);
+        final address = meta?['address'] as String?;
+        final addrText = (address != null && address.trim().isNotEmpty)
+            ? '📍 $address\n'
+            : '';
+        shareText = '$shareText\n\n'
+            '$addrText'
+            '🗺️ Location on Google Maps:\n'
+            'https://maps.google.com/?q=$latStr,$lngStr';
+      }
+    }
+
     await Share.shareXFiles(
       [XFile(widget.file.path)],
-      text: widget.isVideo
-          ? 'Video captured with GPS Map Camera'
-          : 'Photo captured with GPS Map Camera',
+      text: shareText,
     );
   }
 

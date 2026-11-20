@@ -33,6 +33,9 @@ class MediaStorageService {
     double? magneticField,
     int? templateIndex,
     String? mapType,
+    bool? isMockLocation,
+    DateTime? verifiedTimestamp,
+    String? verificationHash,
   }) async {
     try {
       final hasAccess = await Gal.hasAccess(toAlbum: true);
@@ -63,7 +66,16 @@ class MediaStorageService {
                   format: CompressFormat.jpeg,
                 );
 
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final effectiveTimestamp = verifiedTimestamp ??
+          (metadata?['satelliteTimestampUtc'] != null
+              ? DateTime.tryParse(metadata!['satelliteTimestampUtc'])?.toLocal()
+              : null) ??
+          (metadata?['timestamp'] != null
+              ? DateTime.tryParse(metadata!['timestamp'])?.toLocal()
+              : null) ??
+          DateTime.now();
+
+      final timestamp = effectiveTimestamp.millisecondsSinceEpoch;
       final fileName = 'GPSCAM_$timestamp.jpg';
       final localFile = File('${mediaDir.path}/$fileName');
       await localFile.writeAsBytes(finalJpegBytes);
@@ -103,7 +115,7 @@ class MediaStorageService {
                 'GPSImgDirection': effHeading.toStringAsFixed(1),
               if (effHeading != null) 'GPSImgDirectionRef': 'M',
               'DateTimeOriginal':
-                  DateFormat('yyyy:MM:dd HH:mm:ss').format(DateTime.now()),
+                  DateFormat('yyyy:MM:dd HH:mm:ss').format(effectiveTimestamp),
               'Software': 'GPS Map Camera',
             });
           } finally {
@@ -130,8 +142,18 @@ class MediaStorageService {
             '';
         final altitudeStr = metadata?['altitude'] ??
             (effAlt != null ? '${effAlt.toStringAsFixed(1)}m' : '');
-        final timeStr =
-            metadata?['timestamp'] ?? DateTime.now().toIso8601String();
+        final String? satTimeUtc = verifiedTimestamp?.toUtc().toIso8601String() ??
+            metadata?['satelliteTimestampUtc'] as String?;
+        final timeStr = metadata?['timestamp'] ??
+            satTimeUtc ??
+            effectiveTimestamp.toIso8601String();
+        final String? vHash =
+            verificationHash ?? metadata?['verificationHash'] as String?;
+
+        final bool isMocked = isMockLocation ??
+            (metadata?['isMocked'] is bool
+                ? metadata!['isMocked'] as bool
+                : false);
 
         final metaJson = {
           'timestamp': timeStr,
@@ -147,6 +169,9 @@ class MediaStorageService {
           'personName': personName,
           'customNote': customNote,
           'pendingOfflineSync': isOfflinePending,
+          'isMocked': isMocked,
+          if (satTimeUtc != null) 'satelliteTimestampUtc': satTimeUtc,
+          if (vHash != null) 'verificationHash': vHash,
         };
         await File(sidecarPath).writeAsString(jsonEncode(metaJson));
       } catch (e) {
@@ -256,8 +281,9 @@ class MediaStorageService {
     final double? magneticField = sidecarData['magneticField'] is num
         ? (sidecarData['magneticField'] as num).toDouble()
         : null;
-    final String timeStr =
-        sidecarData['timestamp'] ?? DateTime.now().toIso8601String();
+    final String timeStr = sidecarData['satelliteTimestampUtc'] ??
+        sidecarData['timestamp'] ??
+        DateTime.now().toIso8601String();
     final String personName = sidecarData['personName'] ?? '';
     final String customNote = sidecarData['customNote'] ?? '';
     final int? templateIndex = sidecarData['templateIndex'] is int
@@ -360,6 +386,15 @@ class MediaStorageService {
                     cardinalDirection: _getCardinalDirection(heading),
                     settings: settings,
                     margin: EdgeInsets.zero,
+                    showVerifiedBadge: sidecarData['verificationHash'] != null ||
+                        sidecarData['isMocked'] != null,
+                    isMockLocation: sidecarData['isMocked'] == true,
+                    isSatelliteTime: sidecarData['satelliteTimestampUtc'] != null,
+                    verificationHash:
+                        sidecarData['verificationHash'] as String?,
+                    includeMapsLink: settings.includeMapsLink,
+                    isClockTampered: sidecarData['isClockTampered'] == true,
+                    timeSourceLabel: sidecarData['timeSource'] as String?,
                   ),
                 ),
               ],
@@ -455,6 +490,28 @@ class MediaStorageService {
     ];
     final index = ((heading + 11.25) % 360 / 22.5).floor();
     return directions[index.clamp(0, 15)];
+  }
+
+  /// Public helper to load raw sidecar JSON metadata for a media file
+  static Future<Map<String, dynamic>?> loadSidecarMetadata(File imageFile) async {
+    try {
+      final dotIndex = imageFile.path.lastIndexOf('.');
+      final basePath = dotIndex != -1 ? imageFile.path.substring(0, dotIndex) : imageFile.path;
+      final candidates = [
+        File('$basePath.json'),
+        File('${imageFile.path}.json'),
+      ];
+      for (final file in candidates) {
+        if (await file.exists()) {
+          final raw = await file.readAsString();
+          final decoded = jsonDecode(raw);
+          if (decoded is Map<String, dynamic>) {
+            return decoded;
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// Read metadata from the JSON sidecar if present, with fallback to file timestamp

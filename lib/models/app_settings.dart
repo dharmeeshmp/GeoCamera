@@ -25,6 +25,8 @@ class AppSettings extends ChangeNotifier {
   String _cameraGridMode = 'off';
   bool _showHorizonLevel = true;
   bool _compressImages = true;
+  bool _showVerifiedBadge = true;
+  bool _includeMapsLink = true;
 
   // Picture Settings
   String _mapType = 'Normal';
@@ -58,6 +60,8 @@ class AppSettings extends ChangeNotifier {
   String get cameraGridMode => _cameraGridMode;
   bool get showHorizonLevel => _showHorizonLevel;
   bool get compressImages => _compressImages;
+  bool get showVerifiedBadge => _showVerifiedBadge;
+  bool get includeMapsLink => _includeMapsLink;
 
   String get mapType => _mapType;
   MapStyle get mapStyle => _mapStyle;
@@ -94,7 +98,6 @@ class AppSettings extends ChangeNotifier {
           case MapStyle.cartoVoyager:
             return 'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
           case MapStyle.openStreetMap:
-          default:
             return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
         }
     }
@@ -131,6 +134,8 @@ class AppSettings extends ChangeNotifier {
     String? cameraGridMode,
     bool? showHorizonLevel,
     bool? compressImages,
+    bool? showVerifiedBadge,
+    bool? includeMapsLink,
     String? mapType,
     MapStyle? mapStyle,
     String? customNote,
@@ -165,6 +170,8 @@ class AppSettings extends ChangeNotifier {
     if (cameraGridMode != null) _cameraGridMode = cameraGridMode;
     if (showHorizonLevel != null) _showHorizonLevel = showHorizonLevel;
     if (compressImages != null) _compressImages = compressImages;
+    if (showVerifiedBadge != null) _showVerifiedBadge = showVerifiedBadge;
+    if (includeMapsLink != null) _includeMapsLink = includeMapsLink;
 
     if (mapType != null) {
       _mapType = mapType;
@@ -232,6 +239,8 @@ class AppSettings extends ChangeNotifier {
       settings._cameraGridMode = prefs.getString('camera_grid_mode') ?? 'off';
       settings._showHorizonLevel = prefs.getBool('show_horizon_level') ?? true;
       settings._compressImages = prefs.getBool('compress_images') ?? true;
+      settings._showVerifiedBadge = prefs.getBool('show_verified_badge') ?? true;
+      settings._includeMapsLink = prefs.getBool('include_maps_link') ?? true;
 
       settings._mapType = prefs.getString('map_type') ?? 'Normal';
       final mapStyleIndex = prefs.getInt('map_style') ?? 0;
@@ -275,6 +284,8 @@ class AppSettings extends ChangeNotifier {
       await prefs.setString('camera_grid_mode', _cameraGridMode);
       await prefs.setBool('show_horizon_level', _showHorizonLevel);
       await prefs.setBool('compress_images', _compressImages);
+      await prefs.setBool('show_verified_badge', _showVerifiedBadge);
+      await prefs.setBool('include_maps_link', _includeMapsLink);
 
       await prefs.setString('map_type', _mapType);
       await prefs.setInt('map_style', _mapStyle.index);

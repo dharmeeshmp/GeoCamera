@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
@@ -14,7 +17,6 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -26,15 +28,23 @@ import 'models/app_settings.dart';
 import 'screens/gallery_screen.dart';
 import 'screens/permission_screen.dart';
 import 'screens/settings_screen.dart';
+import 'services/app_localizations.dart';
 import 'services/media_storage_service.dart';
 import 'services/review_service.dart';
 import 'widgets/camera_grid_overlay.dart';
 import 'widgets/geo_stamp_overlay.dart';
 import 'widgets/horizon_level_overlay.dart';
 
+final ValueNotifier<ThemeMode> appThemeNotifier =
+    ValueNotifier(ThemeMode.light);
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  final prefs = await SharedPreferences.getInstance();
+  final isDark = prefs.getBool('is_dark_mode') ?? false;
+  appThemeNotifier.value = isDark ? ThemeMode.dark : ThemeMode.light;
+  await AppLocaleController.loadSavedLocale();
   final settings = await AppSettings.loadFromPrefs();
   runApp(GPSMapCameraApp(settings: settings));
 }
@@ -49,16 +59,58 @@ class GPSMapCameraApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'GPS Map Camera',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        primaryColor: Colors.black,
-        scaffoldBackgroundColor: Colors.black,
-        useMaterial3: true,
-      ),
-      home: PermissionScreen(settings: settings),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: appThemeNotifier,
+      builder: (context, themeMode, _) {
+        return ValueListenableBuilder<Locale>(
+          valueListenable: AppLocaleController.localeNotifier,
+          builder: (context, currentLocale, _) {
+            return MaterialApp(
+              title: 'GPS Map Camera',
+              debugShowCheckedModeBanner: false,
+              themeMode: themeMode,
+              locale: currentLocale,
+              supportedLocales: AppLocaleController.supportedLocales,
+              localizationsDelegates: const [
+                GlobalMaterialLocalizations.delegate,
+                GlobalWidgetsLocalizations.delegate,
+                GlobalCupertinoLocalizations.delegate,
+              ],
+              theme: ThemeData(
+                useMaterial3: true,
+                brightness: Brightness.light,
+                colorScheme: ColorScheme.fromSeed(
+                  seedColor: const Color(0xFF1565C0),
+                  brightness: Brightness.light,
+                ),
+                scaffoldBackgroundColor: const Color(0xFFF5F7FA),
+                cardColor: Colors.white,
+                appBarTheme: const AppBarTheme(
+                  backgroundColor: Colors.white,
+                  foregroundColor: Color(0xFF1A1C1E),
+                  elevation: 0.5,
+                ),
+              ),
+              darkTheme: ThemeData(
+                useMaterial3: true,
+                brightness: Brightness.dark,
+                colorScheme: ColorScheme.fromSeed(
+                  seedColor: const Color(0xFF1565C0),
+                  brightness: Brightness.dark,
+                ),
+                scaffoldBackgroundColor: const Color(0xFF121212),
+                cardColor: const Color(0xFF1E1E1E),
+                appBarTheme: const AppBarTheme(
+                  backgroundColor: Color(0xFF1E1E1E),
+                  foregroundColor: Colors.white,
+                  elevation: 0.5,
+                ),
+              ),
+              home: PermissionScreen(settings: settings),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -87,7 +139,6 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   int _selectedCameraIndex = 0;
   FlashMode _currentFlashMode = FlashMode.auto;
   bool _isCameraInitialized = false;
-  bool _isCameraReady = false;
   bool _isCameraInitializing = false;
   bool _isSwitchingCamera = false;
   String? _cameraErrorMessage;
@@ -123,11 +174,15 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   // Image Compression State
   bool _compressImages = true;
 
+  // Verified Capture & Anti-Mock State
+  bool _isMockLocation = false;
+  bool _showVerifiedBadge = true;
+  bool _includeMapsLink = true;
+
   // In-App Gallery Thumbnail State
   File? _latestMediaFile;
 
   // Sensor & Telemetry State
-  bool _isGpsLocked = false;
   Position? _currentPosition;
   double _latitude = 0.0;
   double _longitude = 0.0;
@@ -168,20 +223,147 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   double _snapAltitude = 0.0;
   double _snapAccuracy = 0.0;
   String _snapAddress = '';
-  DateTime _snapTime = DateTime.now();
+  DateTime _snapTime = DateTime.utc(2026);
   double? _snapMagnetic;
   double? _snapHeading;
   String _snapCardinal = '--';
   bool _snapTelemetry = true;
+  bool _snapIsMocked = false;
+  bool _snapIsSatelliteTime = false;
+  bool _snapIsClockTampered = false;
+  String _snapTimeSourceLabel = 'SYS';
+  String? _snapVerificationHash;
+
+  // Monotonic Satellite & Atomic Network Clock Anchor & Stopwatch
+  DateTime? _satelliteAnchorUtc;
+  final Stopwatch _satelliteElapsed = Stopwatch();
+  String _timeSourceLabel = 'SYS';
+  String _liveFormattedDateTime = '';
+
+  bool get _isSatelliteTimeLocked =>
+      _satelliteAnchorUtc != null && _satelliteElapsed.isRunning;
+
+  bool get _isClockTampered {
+    if (_satelliteAnchorUtc == null) return false;
+    final trueUtc = _satelliteAnchorUtc!.add(_satelliteElapsed.elapsed);
+    return DateTime.now().toUtc().difference(trueUtc).abs().inMinutes >= 2;
+  }
+
+  /// Helper getter locking timestamp to atomic GPS satellite/network time whenever an anchor is active.
+  DateTime get _verifiedTimestamp {
+    if (_satelliteAnchorUtc != null) {
+      return _satelliteAnchorUtc!.add(_satelliteElapsed.elapsed).toLocal();
+    }
+    return DateTime.now();
+  }
+
+  /// Builds a deterministic 12-character uppercase SHA-256 verification hash.
+  String _buildVerificationHash(
+      double lat, double lng, DateTime ts, bool isMocked,
+      [bool isTampered = false]) {
+    final raw =
+        '${lat.toStringAsFixed(6)}|${lng.toStringAsFixed(6)}|${ts.toUtc().toIso8601String()}|$isMocked|$isTampered';
+    return sha256
+        .convert(utf8.encode(raw))
+        .toString()
+        .substring(0, 12)
+        .toUpperCase();
+  }
+
+  Future<void> _syncClocksInParallel() async {
+    _syncAtomicHttpClock();
+    _syncNativeGnssNmeaClock();
+  }
+
+  Future<void> _syncAtomicHttpClock() async {
+    try {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 4);
+
+      DateTime? serverUtc;
+
+      // Primary: Google
+      try {
+        final request = await client
+            .headUrl(Uri.parse('https://www.google.com'))
+            .timeout(const Duration(seconds: 4));
+        final response =
+            await request.close().timeout(const Duration(seconds: 4));
+        final dateHeader = response.headers.value('date');
+        if (dateHeader != null && dateHeader.isNotEmpty) {
+          serverUtc = HttpDate.parse(dateHeader).toUtc();
+        }
+      } catch (e) {
+        debugPrint('Google atomic HTTP clock check failed: $e');
+      }
+
+      // Fallback: Cloudflare 1.1.1.1
+      if (serverUtc == null) {
+        try {
+          final request = await client
+              .headUrl(Uri.parse('https://1.1.1.1'))
+              .timeout(const Duration(seconds: 4));
+          final response =
+              await request.close().timeout(const Duration(seconds: 4));
+          final dateHeader = response.headers.value('date');
+          if (dateHeader != null && dateHeader.isNotEmpty) {
+            serverUtc = HttpDate.parse(dateHeader).toUtc();
+          }
+        } catch (e) {
+          debugPrint('Cloudflare atomic HTTP clock check failed: $e');
+        }
+      }
+
+      client.close();
+
+      if (serverUtc != null && mounted) {
+        // Only set if GNSS hasn't already claimed it
+        if (_timeSourceLabel != 'GNSS-SAT') {
+          _satelliteAnchorUtc = serverUtc;
+          _satelliteElapsed
+            ..reset()
+            ..start();
+          _timeSourceLabel = 'ATOMIC-NET';
+          debugPrint('Atomic HTTP clock locked to server UTC: $serverUtc');
+          if (mounted) setState(() {});
+        }
+      }
+    } catch (e) {
+      debugPrint('Http atomic clock sync error: $e');
+    }
+  }
+
+  Future<void> _syncNativeGnssNmeaClock() async {
+    try {
+      const platform = MethodChannel('com.example.gps_camera_app/gnss_clock');
+      final String? isoUtc =
+          await platform.invokeMethod<String>('getTrueSatelliteTimeUtc');
+      if (isoUtc != null && isoUtc.isNotEmpty && mounted) {
+        final parsedUtc = DateTime.tryParse(isoUtc)?.toUtc();
+        if (parsedUtc != null) {
+          _satelliteAnchorUtc = parsedUtc;
+          _satelliteElapsed
+            ..reset()
+            ..start();
+          _timeSourceLabel = 'GNSS-SAT';
+          debugPrint(
+              'Native GNSS clock upgraded to true satellite UTC: $parsedUtc');
+          if (mounted) setState(() {});
+        }
+      }
+    } catch (e) {
+      debugPrint('GNSS NMEA clock sync error: $e');
+    }
+  }
 
   // AdMob Banner State
   BannerAd? _bannerAd;
   bool _isBannerLoaded = false;
+  bool _hasScheduledBanner = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _loadAdaptiveBanner();
   }
 
   @override
@@ -192,9 +374,12 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     _loadGridMode();
     _loadHorizonLevel();
     _loadCompressionSetting();
+    _loadVerifiedBadgeSetting();
+    _loadMapsLinkSetting();
     _initializeAll();
     _loadLatestThumbnail();
     _startClockTimer();
+    _syncClocksInParallel();
   }
 
   @override
@@ -218,6 +403,30 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
         _gridMode = widget.settings.cameraGridMode;
         _showHorizonLevel = widget.settings.showHorizonLevel;
         _compressImages = widget.settings.compressImages;
+        _showVerifiedBadge = widget.settings.showVerifiedBadge;
+        _includeMapsLink = widget.settings.includeMapsLink;
+      });
+    }
+  }
+
+  Future<void> _loadMapsLinkSetting() async {
+    final prefs = await SharedPreferences.getInstance();
+    final link =
+        prefs.getBool('include_maps_link') ?? widget.settings.includeMapsLink;
+    if (mounted) {
+      setState(() {
+        _includeMapsLink = link;
+      });
+    }
+  }
+
+  Future<void> _loadVerifiedBadgeSetting() async {
+    final prefs = await SharedPreferences.getInstance();
+    final show =
+        prefs.getBool('show_verified_badge') ?? widget.settings.showVerifiedBadge;
+    if (mounted) {
+      setState(() {
+        _showVerifiedBadge = show;
       });
     }
   }
@@ -272,8 +481,12 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   }
 
   void _startClockTimer() {
+    _liveFormattedDateTime = _getFormattedTimestamp(_verifiedTimestamp);
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        _liveFormattedDateTime = _getFormattedTimestamp(_verifiedTimestamp);
+        setState(() {});
+      }
     });
   }
 
@@ -298,7 +511,6 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
           setState(() {
             _cameraController = null;
             _isCameraInitialized = false;
-            _isCameraReady = false;
           });
         }
         controller.dispose();
@@ -314,8 +526,9 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       }
       _initLocation();
       _loadLatestThumbnail();
+      _syncClocksInParallel();
       if (_lastGpsFixTime == null ||
-          DateTime.now().difference(_lastGpsFixTime!).inSeconds > 30) {
+          _verifiedTimestamp.difference(_lastGpsFixTime!).inSeconds > 30) {
         _forceRefreshGps();
       }
     }
@@ -404,7 +617,6 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       setState(() {
         _cameraController = null;
         _isCameraInitialized = false;
-        _isCameraReady = false;
       });
     }
 
@@ -460,7 +672,6 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
           _maxZoom = maxZoom;
           _currentZoom = currentZoom;
           _isCameraInitialized = true;
-          _isCameraReady = true;
           _isSwitchingCamera = false;
           _isCameraInitializing = false;
           _cameraErrorMessage = null;
@@ -516,9 +727,6 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
 
     await _initCamera(nextCam);
   }
-
-  /// Alias for camera switching
-  Future<void> _switchCamera() => _toggleCamera();
 
   Future<void> _setZoom(double zoom) async {
     final clamped = zoom.clamp(_minZoom, _maxZoom);
@@ -595,14 +803,17 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
 
   void _applyNewPosition(Position pos, {bool isLiveStream = false}) {
     if (!mounted) return;
+    if (_timeSourceLabel != 'GNSS-SAT') {
+      _syncNativeGnssNmeaClock();
+    }
     setState(() {
       _currentPosition = pos;
       _latitude = pos.latitude;
       _longitude = pos.longitude;
       _altitude = pos.altitude;
       _accuracy = pos.accuracy;
-      _isGpsLocked = true;
-      _lastGpsFixTime = isLiveStream ? DateTime.now() : pos.timestamp;
+      _isMockLocation = pos.isMocked;
+      _lastGpsFixTime = _verifiedTimestamp;
     });
   }
 
@@ -623,14 +834,17 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
 
       if (!mounted) return;
 
+      if (_timeSourceLabel != 'GNSS-SAT') {
+        _syncNativeGnssNmeaClock();
+      }
       setState(() {
         _currentPosition = freshPos;
         _latitude = freshPos.latitude;
         _longitude = freshPos.longitude;
         _altitude = freshPos.altitude;
         _accuracy = freshPos.accuracy;
-        _isGpsLocked = true;
-        _lastGpsFixTime = DateTime.now();
+        _isMockLocation = freshPos.isMocked;
+        _lastGpsFixTime = _verifiedTimestamp;
       });
 
       try {
@@ -681,7 +895,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       // Initial fast location fix (filter out stale cached fixes > 60s old)
       final lastKnown = await Geolocator.getLastKnownPosition();
       if (lastKnown != null && mounted) {
-        final age = DateTime.now().difference(lastKnown.timestamp);
+        final age = _verifiedTimestamp.difference(lastKnown.timestamp);
         if (age.inSeconds <= 60) {
           _applyNewPosition(lastKnown, isLiveStream: false);
           _geocodePosition(lastKnown);
@@ -878,12 +1092,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   }
 
   String _getFormattedTimestamp(DateTime dt) {
-    final base = DateFormat('EEE, MMM d, yyyy, hh:mm a').format(dt);
-    final offset = dt.timeZoneOffset;
-    final sign = offset.isNegative ? '-' : '+';
-    final hours = offset.inHours.abs();
-    final minutes = (offset.inMinutes.abs() % 60).toString().padLeft(2, '0');
-    return '$base, GMT $sign$hours:$minutes';
+    return widget.settings.formatDateTime(dt);
   }
 
   // ==========================================
@@ -954,16 +1163,27 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     HapticFeedback.mediumImpact();
 
     // Freeze snapshot data at the exact instant of shutter tap
-    _snapLat = _latitude;
-    _snapLng = _longitude;
-    _snapAltitude = _altitude;
-    _snapAccuracy = _accuracy;
+    _snapLat = _currentPosition?.latitude ?? _latitude;
+    _snapLng = _currentPosition?.longitude ?? _longitude;
+    _snapAltitude = _currentPosition?.altitude ?? _altitude;
+    _snapAccuracy = _currentPosition?.accuracy ?? _accuracy;
     _snapAddress = _currentAddress;
-    _snapTime = DateTime.now();
+    _snapTime = _verifiedTimestamp;
+    _snapIsSatelliteTime = _isSatelliteTimeLocked;
+    _snapIsClockTampered = _isClockTampered;
+    _snapTimeSourceLabel = _timeSourceLabel;
     _snapMagnetic = _smoothedMagneticField;
     _snapHeading = _heading;
     _snapCardinal = _cardinalDirection;
     _snapTelemetry = _showTelemetry;
+    _snapIsMocked = _isMockLocation;
+    _snapVerificationHash = _buildVerificationHash(
+      _snapLat,
+      _snapLng,
+      _snapTime,
+      _snapIsMocked,
+      _snapIsClockTampered,
+    );
 
     setState(() {
       _isProcessingCapture = true;
@@ -992,6 +1212,9 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
           magneticField: _snapMagnetic,
           templateIndex: widget.settings.templateIndex,
           mapType: widget.settings.mapType,
+          isMockLocation: _snapIsMocked,
+          verifiedTimestamp: _snapTime,
+          verificationHash: _snapVerificationHash,
           metadata: {
             'timestamp': _snapTime.toIso8601String(),
             'address': '',
@@ -1006,6 +1229,11 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
             'personName': widget.settings.personName,
             'customNote': widget.settings.customNote,
             'pendingOfflineSync': true,
+            'isMocked': _snapIsMocked,
+            'isClockTampered': _snapIsClockTampered,
+            'timeSource': _snapTimeSourceLabel,
+            'satelliteTimestampUtc': _snapTime.toUtc().toIso8601String(),
+            'verificationHash': _snapVerificationHash,
           },
         );
 
@@ -1022,21 +1250,21 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
           ReviewService.recordSuccessfulCapture();
 
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              backgroundColor: Color(0xFF1E293B),
+            SnackBar(
+              backgroundColor: const Color(0xFF1E293B),
               content: Row(
                 children: [
-                  Icon(Icons.cloud_off, color: Colors.amberAccent),
-                  SizedBox(width: 8),
+                  const Icon(Icons.cloud_off, color: Colors.amberAccent),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Saved offline with GPS coordinates — Sync & Stamp in Gallery when online.',
-                      style: TextStyle(color: Colors.white),
+                      tr('offline_saved'),
+                      style: const TextStyle(color: Colors.white),
                     ),
                   ),
                 ],
               ),
-              duration: Duration(seconds: 4),
+              duration: const Duration(seconds: 4),
             ),
           );
         }
@@ -1097,6 +1325,9 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
         altitude: _currentPosition?.altitude ??
             (_snapAltitude != 0.0 ? _snapAltitude : null),
         heading: _heading ?? _snapHeading,
+        isMockLocation: _snapIsMocked,
+        verifiedTimestamp: _snapTime,
+        verificationHash: _snapVerificationHash,
         metadata: {
           'timestamp': _snapTime.toIso8601String(),
           'address': _snapAddress,
@@ -1106,6 +1337,11 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
           'heading': _snapHeading,
           'personName': widget.settings.personName,
           'customNote': widget.settings.customNote,
+          'isMocked': _snapIsMocked,
+          'isClockTampered': _snapIsClockTampered,
+          'timeSource': _snapTimeSourceLabel,
+          'satelliteTimestampUtc': _snapTime.toUtc().toIso8601String(),
+          'verificationHash': _snapVerificationHash,
         },
       );
 
@@ -1227,7 +1463,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
 
         if (stampPngPath != null && await File(stampPngPath).exists()) {
           final tempDir = await getTemporaryDirectory();
-          final timestamp = DateTime.now().millisecondsSinceEpoch;
+          final timestamp = _verifiedTimestamp.millisecondsSinceEpoch;
           final stampedVideoPath = '${tempDir.path}/stamped_$timestamp.mp4';
 
           final cmd = '-y -i "${rawVideo.path}" -i "$stampPngPath" '
@@ -1288,14 +1524,32 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   // ==========================================
   @override
   Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final liveFormattedDateTime = _getFormattedTimestamp(now);
+    final liveLat = _currentPosition?.latitude ?? _latitude;
+    final liveLng = _currentPosition?.longitude ?? _longitude;
+    final liveTimestamp = _verifiedTimestamp;
+    final liveFormattedDateTime = _liveFormattedDateTime.isNotEmpty
+        ? _liveFormattedDateTime
+        : _getFormattedTimestamp(liveTimestamp);
+    final liveVerificationHash = _buildVerificationHash(
+      liveLat,
+      liveLng,
+      liveTimestamp,
+      _isMockLocation,
+      _isClockTampered,
+    );
 
     final controller = _cameraController;
     final bool canShowPreview = controller != null &&
         !_isSwitchingCamera &&
         _isCameraInitialized &&
         controller.value.isInitialized;
+
+    if ((canShowPreview || _cameraErrorMessage != null) && !_hasScheduledBanner) {
+      _hasScheduledBanner = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadAdaptiveBanner();
+      });
+    }
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -1491,12 +1745,93 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                         ),
                       ),
 
+                    // 1-Tap GPS Refresh & Status Pill Button
+                    Builder(
+                      builder: (context) {
+                        final int? secAgo = _lastGpsFixTime != null
+                            ? _verifiedTimestamp
+                                .difference(_lastGpsFixTime!)
+                                .inSeconds
+                                .clamp(0, 999)
+                            : null;
+                        final bool isFresh = _lastGpsFixTime != null &&
+                            _verifiedTimestamp
+                                    .difference(_lastGpsFixTime!)
+                                    .inSeconds <=
+                                15;
+
+                        return GestureDetector(
+                          onTap: _isRefreshingGps ? null : _forceRefreshGps,
+                          behavior: HitTestBehavior.opaque,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: Colors.white24,
+                                width: 0.8,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (_isRefreshingGps)
+                                  const SizedBox(
+                                    width: 13,
+                                    height: 13,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 1.8,
+                                      color: Colors.amberAccent,
+                                    ),
+                                  )
+                                else ...[
+                                  Container(
+                                    width: 7,
+                                    height: 7,
+                                    decoration: BoxDecoration(
+                                      color: isFresh
+                                          ? Colors.greenAccent
+                                          : Colors.amberAccent,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(
+                                    Icons.refresh,
+                                    size: 15,
+                                    color: Colors.white,
+                                  ),
+                                ],
+                                const SizedBox(width: 5),
+                                Text(
+                                  _isRefreshingGps
+                                      ? 'Locating...'
+                                      : (_lastGpsFixTime != null
+                                          ? '${secAgo}s'
+                                          : 'GPS'),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+
                     // Right Toolbar Actions (Flip, Telemetry, Settings)
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         // Telemetry Visibility Toggle
                         IconButton(
+                          padding: const EdgeInsets.all(8),
+                          constraints: const BoxConstraints(),
                           icon: Icon(
                             _showTelemetry
                                 ? Icons.sensors
@@ -1513,6 +1848,8 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                         ),
                         // Guidance Grid Toggle
                         IconButton(
+                          padding: const EdgeInsets.all(8),
+                          constraints: const BoxConstraints(),
                           icon: Icon(
                             _gridMode != 'off' ? Icons.grid_on : Icons.grid_off,
                             color: _gridMode != 'off'
@@ -1523,12 +1860,16 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                         ),
                         // Camera Flip (Front/Back)
                         IconButton(
+                          padding: const EdgeInsets.all(8),
+                          constraints: const BoxConstraints(),
                           icon: const Icon(Icons.flip_camera_ios_rounded,
                               color: Colors.white),
                           onPressed: _toggleCamera,
                         ),
                         // Settings Button
                         IconButton(
+                          padding: const EdgeInsets.all(8),
+                          constraints: const BoxConstraints(),
                           icon: const Icon(Icons.settings_outlined,
                               color: Colors.white),
                           onPressed: () async {
@@ -1542,6 +1883,8 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                             await _loadGridMode();
                             await _loadHorizonLevel();
                             await _loadCompressionSetting();
+                            await _loadVerifiedBadgeSetting();
+                            await _loadMapsLinkSetting();
                           },
                         ),
                       ],
@@ -1664,8 +2007,8 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                 RepaintBoundary(
                   key: _liveStampKey,
                   child: GeoStampOverlay(
-                    latitude: _latitude,
-                    longitude: _longitude,
+                    latitude: liveLat,
+                    longitude: liveLng,
                     altitude: _altitude,
                     accuracy: _accuracy,
                     address: _currentAddress,
@@ -1675,10 +2018,14 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                     cardinalDirection: _cardinalDirection,
                     showTelemetry: _showTelemetry,
                     settings: widget.settings,
-                    lastGpsFixTime: _lastGpsFixTime,
-                    isRefreshingGps: _isRefreshingGps,
-                    onRefreshGps: _forceRefreshGps,
                     mapController: _mapController,
+                    showVerifiedBadge: _showVerifiedBadge,
+                    isMockLocation: _isMockLocation,
+                    isSatelliteTime: _isSatelliteTimeLocked,
+                    verificationHash: liveVerificationHash,
+                    includeMapsLink: _includeMapsLink,
+                    isClockTampered: _isClockTampered,
+                    timeSourceLabel: _timeSourceLabel,
                   ),
                 ),
               ],
@@ -1870,6 +2217,13 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                           showTelemetry: _snapTelemetry,
                           settings: widget.settings,
                           margin: EdgeInsets.zero,
+                          showVerifiedBadge: _showVerifiedBadge,
+                          isMockLocation: _snapIsMocked,
+                          isSatelliteTime: _snapIsSatelliteTime,
+                          verificationHash: _snapVerificationHash,
+                          includeMapsLink: _includeMapsLink,
+                          isClockTampered: _snapIsClockTampered,
+                          timeSourceLabel: _snapTimeSourceLabel,
                         ),
                       ),
                     ],
@@ -1885,13 +2239,15 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       // ----------------------------------------------------
       bottomNavigationBar: SafeArea(
         top: false,
-        child: SizedBox(
+        child: Container(
+          color: Colors.black,
           height: _bannerAd?.size.height.toDouble() ??
               (MediaQuery.sizeOf(context).height * 0.12)
                   .round()
                   .clamp(60, 115)
                   .toDouble(),
           width: double.infinity,
+          alignment: Alignment.center,
           child: (_isBannerLoaded && _bannerAd != null)
               ? AdWidget(ad: _bannerAd!)
               : const SizedBox.shrink(),

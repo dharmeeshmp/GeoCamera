@@ -1,6 +1,8 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 
 import '../models/app_settings.dart';
 
@@ -12,12 +14,16 @@ class GeoStampOverlay extends StatelessWidget {
   final String address;
   final String formattedDateTime;
   final double? magneticField;
-  final double? heading;
+  final double heading;
   final String cardinalDirection;
   final bool showTelemetry;
   final AppSettings? settings;
   final double scale;
   final EdgeInsetsGeometry? margin;
+  final DateTime? lastGpsFixTime;
+  final bool isRefreshingGps;
+  final VoidCallback? onRefreshGps;
+  final MapController? mapController;
 
   const GeoStampOverlay({
     super.key,
@@ -28,12 +34,16 @@ class GeoStampOverlay extends StatelessWidget {
     required this.address,
     required this.formattedDateTime,
     this.magneticField,
-    this.heading,
+    this.heading = 0.0,
     this.cardinalDirection = '--',
     this.showTelemetry = true,
     this.settings,
     this.scale = 1.0,
     this.margin,
+    this.lastGpsFixTime,
+    this.isRefreshingGps = false,
+    this.onRefreshGps,
+    this.mapController,
   });
 
   @override
@@ -130,6 +140,9 @@ class GeoStampOverlay extends StatelessWidget {
                       children: [
                         if (hasValidGps)
                           FlutterMap(
+                            mapController: mapController,
+                            key: ValueKey(
+                                '${latitude.toStringAsFixed(4)},${longitude.toStringAsFixed(4)}'),
                             options: MapOptions(
                               initialCenter: LatLng(latitude, longitude),
                               initialZoom: 15.0,
@@ -146,13 +159,45 @@ class GeoStampOverlay extends StatelessWidget {
                                 markers: [
                                   Marker(
                                     point: LatLng(latitude, longitude),
-                                    width: 24,
-                                    height: 24,
+                                    width: 72,
+                                    height: 72,
                                     alignment: Alignment.center,
-                                    child: const Icon(
-                                      Icons.location_on,
-                                      color: Colors.redAccent,
-                                      size: 24,
+                                    child: Stack(
+                                      alignment: Alignment.center,
+                                      children: [
+                                        // 1. Rotating FOV Radar Cone (Bottom layer)
+                                        Transform.rotate(
+                                          angle: heading * (math.pi / 180.0),
+                                          child: const CustomPaint(
+                                            size: Size(72, 72),
+                                            painter: _FovConePainter(),
+                                          ),
+                                        ),
+                                        // 2. White circular halo/dot at apex base
+                                        Container(
+                                          width: 8,
+                                          height: 8,
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            shape: BoxShape.circle,
+                                            boxShadow: [
+                                              BoxShadow(
+                                                color: Colors.black.withOpacity(0.4),
+                                                blurRadius: 2,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        // 3. Location pin anchored at apex of the cone
+                                        Transform.translate(
+                                          offset: const Offset(0, -7),
+                                          child: const Icon(
+                                            Icons.location_on,
+                                            color: Colors.redAccent,
+                                            size: 22,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ],
@@ -208,7 +253,7 @@ class GeoStampOverlay extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // ROW 1: Full Address
+                        // ROW 1: Full Address & GPS Freshness / 1-Tap Refresh
                         if (effectiveSettings.showAddress)
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -235,7 +280,16 @@ class GeoStampOverlay extends StatelessWidget {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
+                              if (lastGpsFixTime != null || onRefreshGps != null) ...[
+                                const SizedBox(width: 4),
+                                _buildGpsFreshnessWidget(),
+                              ],
                             ],
+                          )
+                        else if (lastGpsFixTime != null || onRefreshGps != null)
+                          Align(
+                            alignment: Alignment.topRight,
+                            child: _buildGpsFreshnessWidget(),
                           ),
 
                         // ROW 2: Coordinates (Lat / Lon)
@@ -394,8 +448,8 @@ class GeoStampOverlay extends StatelessWidget {
                                         const SizedBox(width: 2),
                                         Flexible(
                                           child: Text(
-                                            heading != null
-                                                ? '${heading!.round()}° $cardinalDirection'
+                                            heading > 0.0 || cardinalDirection != '--'
+                                                ? '${heading.round()}° $cardinalDirection'
                                                 : '--',
                                             style: TextStyle(
                                               color: textColor.withOpacity(0.9),
@@ -481,4 +535,119 @@ class GeoStampOverlay extends StatelessWidget {
       ),
     );
   }
+
+  Widget _buildGpsFreshnessWidget() {
+    final int secAgo = lastGpsFixTime != null
+        ? DateTime.now().difference(lastGpsFixTime!).inSeconds.clamp(0, 999)
+        : 0;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        if (lastGpsFixTime != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+            decoration: BoxDecoration(
+              color: Colors.black38,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 6,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: (secAgo <= 15 && !isRefreshingGps)
+                        ? Colors.greenAccent
+                        : Colors.amberAccent,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  isRefreshingGps ? 'Locating...' : 'Updated ${secAgo}s ago',
+                  style: const TextStyle(
+                    fontSize: 9.5,
+                    color: Colors.white70,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (onRefreshGps != null) ...[
+          const SizedBox(width: 2),
+          GestureDetector(
+            onTap: isRefreshingGps ? null : onRefreshGps,
+            behavior: HitTestBehavior.opaque,
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: isRefreshingGps
+                  ? const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: Colors.amberAccent,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.my_location,
+                      size: 14,
+                      color: Colors.amberAccent,
+                    ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// Smooth 60° camera direction / field-of-view radar cone with radial gradient fill.
+class _FovConePainter extends CustomPainter {
+  const _FovConePainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    const double radius = 34.0;
+    const double startAngle = -math.pi / 2 - (math.pi / 6); // -120° (60° cone centered on North)
+    const double sweepAngle = math.pi / 3; // 60°
+
+    final rect = Rect.fromCircle(center: center, radius: radius);
+
+    // 1. Sector path for soft radial gradient fill
+    final path = Path()
+      ..moveTo(center.dx, center.dy)
+      ..arcTo(rect, startAngle, sweepAngle, false)
+      ..close();
+
+    final fillPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Colors.blueAccent.withOpacity(0.42),
+          Colors.blueAccent.withOpacity(0.0),
+        ],
+        stops: const [0.0, 1.0],
+      ).createShader(rect)
+      ..style = PaintingStyle.fill;
+
+    canvas.drawPath(path, fillPaint);
+
+    // 2. Thin 1.2px curved outer stroke along the arc
+    final arcPath = Path()..addArc(rect, startAngle, sweepAngle);
+    final arcPaint = Paint()
+      ..color = Colors.blueAccent.withOpacity(0.55)
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawPath(arcPath, arcPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

@@ -179,12 +179,44 @@ class PdfReportService {
       ),
     );
 
-    final tempDir = await getTemporaryDirectory();
+    final docsDir = await getApplicationDocumentsDirectory();
+    final reportsDir = Directory('${docsDir.path}/GPSCameraMedia/Reports');
+    if (!await reportsDir.exists()) {
+      await reportsDir.create(recursive: true);
+    }
     final pdfFile = File(
-      '${tempDir.path}/Site_Inspection_Report_${DateTime.now().millisecondsSinceEpoch}.pdf',
+      '${reportsDir.path}/Site_Inspection_Report_${DateTime.now().millisecondsSinceEpoch}.pdf',
     );
     await pdfFile.writeAsBytes(await doc.save());
     return pdfFile;
+  }
+
+  /// Lists all permanently saved inspection reports inside GPSCameraMedia/Reports/
+  /// sorted newest-first by lastModifiedSync().
+  static Future<List<File>> getSavedPdfReports() async {
+    try {
+      final docsDir = await getApplicationDocumentsDirectory();
+      final reportsDir = Directory('${docsDir.path}/GPSCameraMedia/Reports');
+      if (!await reportsDir.exists()) {
+        return [];
+      }
+      final files = reportsDir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.toLowerCase().endsWith('.pdf'))
+          .toList();
+      files.sort((a, b) {
+        try {
+          return b.lastModifiedSync().compareTo(a.lastModifiedSync());
+        } catch (_) {
+          return 0;
+        }
+      });
+      return files;
+    } catch (e) {
+      debugPrint('Error getting saved PDF reports: $e');
+      return [];
+    }
   }
 
   static pw.Widget _buildPhotoCard(Map<String, dynamic> item) {

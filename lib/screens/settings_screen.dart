@@ -34,6 +34,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadAdaptiveBanner() async {
     if (_bannerAd != null) return;
 
+    await AdConfig.ensureInitialized();
+    if (!mounted) return;
+
     final int width = MediaQuery.sizeOf(context).width.truncate();
     final AdSize? adaptiveSize =
         await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(width);
@@ -142,6 +145,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 title: 'Camera Grid',
                 subtitle: _getGridModeSubtitle(s.cameraGridMode),
                 onTap: _showGridModeDialog,
+              ),
+              _buildDivider(),
+              _buildSwitchTile(
+                icon: Icons.straighten,
+                title: 'Level Indicator',
+                subtitle: 'Show live horizon & tilt bubble level',
+                value: s.showHorizonLevel,
+                onChanged: (v) async {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setBool('show_horizon_level', v);
+                  setState(() => s.update(showHorizonLevel: v));
+                },
+              ),
+              _buildDivider(),
+              _buildSwitchTile(
+                icon: Icons.compress,
+                title: 'Image Compression',
+                subtitle:
+                    'Optimize photo size (~1.2 MB) for fast sharing; turn off for full-size photos',
+                value: s.compressImages,
+                onChanged: (v) async {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setBool('compress_images', v);
+                  setState(() => s.update(compressImages: v));
+                },
               ),
             ],
           ),

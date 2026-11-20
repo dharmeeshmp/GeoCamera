@@ -29,6 +29,9 @@ dependencies:
   video_player: ^2.9.0
   in_app_review: ^2.0.9
   pdf: ^3.11.1
+  native_exif: ^0.6.0
+  open_filex: ^4.5.0
+  flutter_image_compress: ^2.3.0
 
 dev_dependencies:
   flutter_test:

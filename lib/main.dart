@@ -9,10 +9,13 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:intl/intl.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
@@ -27,11 +30,11 @@ import 'services/media_storage_service.dart';
 import 'services/review_service.dart';
 import 'widgets/camera_grid_overlay.dart';
 import 'widgets/geo_stamp_overlay.dart';
+import 'widgets/horizon_level_overlay.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  await MobileAds.instance.initialize();
   final settings = await AppSettings.loadFromPrefs();
   runApp(GPSMapCameraApp(settings: settings));
 }
@@ -89,6 +92,11 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   bool _isSwitchingCamera = false;
   String? _cameraErrorMessage;
 
+  // Multi-Lens Rear Camera & Ultra-Wide State
+  CameraDescription? _mainBackCamera;
+  CameraDescription? _ultraWideBackCamera;
+  bool _isUsingUltraWide = false;
+
   // Zoom Capabilities & State
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
@@ -109,6 +117,12 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   // Guidance Grid State
   String _gridMode = 'off';
 
+  // Horizon Level State
+  bool _showHorizonLevel = true;
+
+  // Image Compression State
+  bool _compressImages = true;
+
   // In-App Gallery Thumbnail State
   File? _latestMediaFile;
 
@@ -122,6 +136,9 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   String _currentAddress = 'Acquiring GPS location...';
   Position? _lastGeocodedPosition;
   Timer? _clockTimer;
+  DateTime? _lastGpsFixTime;
+  bool _isRefreshingGps = false;
+  final MapController _mapController = MapController();
 
   // Magnetic Field with Exponential Moving Average Low-Pass Smoothing
   double? _smoothedMagneticField;
@@ -173,6 +190,8 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     WidgetsBinding.instance.addObserver(this);
     widget.settings.addListener(_onSettingsChanged);
     _loadGridMode();
+    _loadHorizonLevel();
+    _loadCompressionSetting();
     _initializeAll();
     _loadLatestThumbnail();
     _startClockTimer();
@@ -197,6 +216,30 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     if (mounted) {
       setState(() {
         _gridMode = widget.settings.cameraGridMode;
+        _showHorizonLevel = widget.settings.showHorizonLevel;
+        _compressImages = widget.settings.compressImages;
+      });
+    }
+  }
+
+  Future<void> _loadCompressionSetting() async {
+    final prefs = await SharedPreferences.getInstance();
+    final compress =
+        prefs.getBool('compress_images') ?? widget.settings.compressImages;
+    if (mounted) {
+      setState(() {
+        _compressImages = compress;
+      });
+    }
+  }
+
+  Future<void> _loadHorizonLevel() async {
+    final prefs = await SharedPreferences.getInstance();
+    final show =
+        prefs.getBool('show_horizon_level') ?? widget.settings.showHorizonLevel;
+    if (mounted) {
+      setState(() {
+        _showHorizonLevel = show;
       });
     }
   }
@@ -271,6 +314,10 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       }
       _initLocation();
       _loadLatestThumbnail();
+      if (_lastGpsFixTime == null ||
+          DateTime.now().difference(_lastGpsFixTime!).inSeconds > 30) {
+        _forceRefreshGps();
+      }
     }
   }
 
@@ -314,6 +361,27 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
           _cameraErrorMessage = 'No cameras found on this device.';
         });
         return;
+      }
+
+      CameraDescription? mainBack;
+      CameraDescription? ultraWideBack;
+      for (final cam in _cameras) {
+        if (cam.lensDirection == CameraLensDirection.back) {
+          if (mainBack == null) {
+            mainBack = cam;
+          } else if (ultraWideBack == null &&
+              cam.name != mainBack.name &&
+              cam.sensorOrientation == mainBack.sensorOrientation) {
+            ultraWideBack = cam;
+          }
+        }
+      }
+      _mainBackCamera = mainBack;
+      _ultraWideBackCamera = ultraWideBack;
+
+      if (_mainBackCamera != null && !_isUsingUltraWide) {
+        _selectedCameraIndex = _cameras.indexOf(_mainBackCamera!);
+        if (_selectedCameraIndex == -1) _selectedCameraIndex = 0;
       }
 
       await _initCamera(_cameras[_selectedCameraIndex]);
@@ -376,7 +444,9 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
         debugPrint('Error querying zoom levels: $e');
       }
 
-      final currentZoom = 1.0.clamp(minZoom, maxZoom);
+      final currentZoom = _isUsingUltraWide
+          ? minZoom.clamp(minZoom, maxZoom)
+          : 1.0.clamp(minZoom, maxZoom);
       try {
         await newController.setZoomLevel(currentZoom);
       } catch (e) {
@@ -398,6 +468,13 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       }
     } catch (e) {
       debugPrint('Error initializing camera: $e');
+      if (_isUsingUltraWide && _mainBackCamera != null) {
+        _isUsingUltraWide = false;
+        _selectedCameraIndex = _cameras.indexOf(_mainBackCamera!);
+        if (_selectedCameraIndex == -1) _selectedCameraIndex = 0;
+        await _initCamera(_mainBackCamera!);
+        return;
+      }
       if (mounted) {
         setState(() {
           _isCameraInitializing = false;
@@ -412,12 +489,78 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     if (_cameras.length < 2 || _isSwitchingCamera || _cameraController == null) {
       return;
     }
-    _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras.length;
-    await _initCamera(_cameras[_selectedCameraIndex]);
+
+    final currentCam = _cameras[_selectedCameraIndex];
+    CameraDescription nextCam;
+
+    if (currentCam.lensDirection == CameraLensDirection.back) {
+      // Currently on any rear camera -> switch to front camera
+      final frontCam = _cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.front,
+        orElse: () => _cameras[(_selectedCameraIndex + 1) % _cameras.length],
+      );
+      nextCam = frontCam;
+      _isUsingUltraWide = false;
+    } else {
+      // Currently on front camera -> switch back to main back camera
+      nextCam = _mainBackCamera ??
+          _cameras.firstWhere(
+            (c) => c.lensDirection == CameraLensDirection.back,
+            orElse: () => _cameras[0],
+          );
+      _isUsingUltraWide = false;
+    }
+
+    _selectedCameraIndex = _cameras.indexOf(nextCam);
+    if (_selectedCameraIndex == -1) _selectedCameraIndex = 0;
+
+    await _initCamera(nextCam);
   }
 
   /// Alias for camera switching
   Future<void> _switchCamera() => _toggleCamera();
+
+  Future<void> _setZoom(double zoom) async {
+    final clamped = zoom.clamp(_minZoom, _maxZoom);
+    if (mounted) {
+      setState(() {
+        _currentZoom = clamped;
+      });
+    }
+    try {
+      await _cameraController?.setZoomLevel(clamped);
+    } catch (e) {
+      debugPrint('Error setting zoom level: $e');
+    }
+  }
+
+  Future<void> _onUltraWideTapped() async {
+    if (_isSwitchingCamera) return;
+
+    if (_minZoom < 1.0) {
+      await _setZoom(_minZoom);
+    } else if (_ultraWideBackCamera != null && !_isUsingUltraWide) {
+      _isUsingUltraWide = true;
+      _selectedCameraIndex = _cameras.indexOf(_ultraWideBackCamera!);
+      if (_selectedCameraIndex == -1) _selectedCameraIndex = 0;
+      await _initCamera(_ultraWideBackCamera!);
+      await _setZoom(_minZoom.clamp(_minZoom, _maxZoom));
+    }
+  }
+
+  Future<void> _onStandardZoomTapped(double targetZoom) async {
+    if (_isSwitchingCamera) return;
+
+    if (_isUsingUltraWide && _mainBackCamera != null) {
+      _isUsingUltraWide = false;
+      _selectedCameraIndex = _cameras.indexOf(_mainBackCamera!);
+      if (_selectedCameraIndex == -1) _selectedCameraIndex = 0;
+      await _initCamera(_mainBackCamera!);
+      await _setZoom(targetZoom.clamp(_minZoom, _maxZoom));
+    } else {
+      await _setZoom(targetZoom.clamp(_minZoom, _maxZoom));
+    }
+  }
 
   Future<void> _cycleFlashMode() async {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
@@ -450,6 +593,67 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     }
   }
 
+  void _applyNewPosition(Position pos, {bool isLiveStream = false}) {
+    if (!mounted) return;
+    setState(() {
+      _currentPosition = pos;
+      _latitude = pos.latitude;
+      _longitude = pos.longitude;
+      _altitude = pos.altitude;
+      _accuracy = pos.accuracy;
+      _isGpsLocked = true;
+      _lastGpsFixTime = isLiveStream ? DateTime.now() : pos.timestamp;
+    });
+  }
+
+  Future<void> _forceRefreshGps() async {
+    if (_isRefreshingGps || !mounted) return;
+
+    setState(() {
+      _isRefreshingGps = true;
+    });
+
+    try {
+      final freshPos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 8),
+        ),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _currentPosition = freshPos;
+        _latitude = freshPos.latitude;
+        _longitude = freshPos.longitude;
+        _altitude = freshPos.altitude;
+        _accuracy = freshPos.accuracy;
+        _isGpsLocked = true;
+        _lastGpsFixTime = DateTime.now();
+      });
+
+      try {
+        _mapController.move(
+          LatLng(freshPos.latitude, freshPos.longitude),
+          16.0,
+        );
+      } catch (e) {
+        debugPrint('MapController move error: $e');
+      }
+
+      await _geocodePosition(freshPos);
+    } catch (e) {
+      debugPrint('Force refresh GPS error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRefreshingGps = false;
+        });
+      }
+    }
+  }
+
   // ==========================================
   // GPS LOCATION & REVERSE GEOCODING
   // ==========================================
@@ -474,18 +678,15 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
         return;
       }
 
-      // Initial fast location fix
-      final lastPos = await Geolocator.getLastKnownPosition();
-      if (lastPos != null && mounted) {
-        setState(() {
-          _currentPosition = lastPos;
-          _latitude = lastPos.latitude;
-          _longitude = lastPos.longitude;
-          _altitude = lastPos.altitude;
-          _accuracy = lastPos.accuracy;
-          _isGpsLocked = true;
-        });
-        _geocodePosition(lastPos);
+      // Initial fast location fix (filter out stale cached fixes > 60s old)
+      final lastKnown = await Geolocator.getLastKnownPosition();
+      if (lastKnown != null && mounted) {
+        final age = DateTime.now().difference(lastKnown.timestamp);
+        if (age.inSeconds <= 60) {
+          _applyNewPosition(lastKnown, isLiveStream: false);
+          _geocodePosition(lastKnown);
+        }
+        // If > 60s old, discard it completely so Site A's address is never shown at Site B
       }
 
       // Continuous high-accuracy location stream
@@ -498,20 +699,18 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
       ).listen(
         (Position pos) {
           if (!mounted) return;
-          setState(() {
-            _currentPosition = pos;
-            _latitude = pos.latitude;
-            _longitude = pos.longitude;
-            _altitude = pos.altitude;
-            _accuracy = pos.accuracy;
-            _isGpsLocked = true;
-          });
+          _applyNewPosition(pos, isLiveStream: true);
           _throttleGeocoding(pos);
         },
         onError: (err) {
           debugPrint('Location stream error: $err');
         },
       );
+
+      // Trigger fresh lock if no fresh cached fix was available
+      if (_lastGpsFixTime == null) {
+        _forceRefreshGps();
+      }
     } catch (e) {
       debugPrint('Error starting location stream: $e');
     }
@@ -693,6 +892,10 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
   Future<void> _loadAdaptiveBanner() async {
     if (_bannerAd != null || !mounted) return;
 
+    // Await lazy SDK initialization without blocking cold start or camera preview
+    await AdConfig.ensureInitialized();
+    if (!mounted) return;
+
     final size = MediaQuery.sizeOf(context);
     final int adWidth = size.width.truncate();
     final int maxAdHeight = (size.height * 0.12).round().clamp(60, 115);
@@ -767,9 +970,78 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
     });
 
     try {
+      final isOffline = _currentAddress.isEmpty ||
+          _currentAddress.contains('Fetching') ||
+          _currentAddress.contains('Offline') ||
+          _currentAddress.contains('unavailable') ||
+          _currentAddress.contains('Acquiring');
+
       // 1. Capture raw photo file from CameraX
       final xFile = await _cameraController!.takePicture();
       final rawBytes = await xFile.readAsBytes();
+
+      if (isOffline && _currentPosition != null) {
+        final savedFile = await MediaStorageService.saveStampedPhoto(
+          rawBytes,
+          isOfflinePending: true,
+          latitude: _currentPosition?.latitude ?? _snapLat,
+          longitude: _currentPosition?.longitude ?? _snapLng,
+          altitude: _currentPosition?.altitude ?? _snapAltitude,
+          accuracy: _currentPosition?.accuracy ?? _snapAccuracy,
+          heading: _heading ?? _snapHeading,
+          magneticField: _snapMagnetic,
+          templateIndex: widget.settings.templateIndex,
+          mapType: widget.settings.mapType,
+          metadata: {
+            'timestamp': _snapTime.toIso8601String(),
+            'address': '',
+            'lat': _snapLat,
+            'lng': _snapLng,
+            'altitude': '$_snapAltitude m',
+            'heading': _snapHeading,
+            'accuracy': _snapAccuracy,
+            'magneticField': _snapMagnetic,
+            'templateIndex': widget.settings.templateIndex,
+            'mapType': widget.settings.mapType,
+            'personName': widget.settings.personName,
+            'customNote': widget.settings.customNote,
+            'pendingOfflineSync': true,
+          },
+        );
+
+        try {
+          await File(xFile.path).delete();
+        } catch (_) {}
+
+        if (mounted) {
+          setState(() {
+            _latestMediaFile = savedFile;
+            _isProcessingCapture = false;
+          });
+
+          ReviewService.recordSuccessfulCapture();
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              backgroundColor: Color(0xFF1E293B),
+              content: Row(
+                children: [
+                  Icon(Icons.cloud_off, color: Colors.amberAccent),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Saved offline with GPS coordinates — Sync & Stamp in Gallery when online.',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+        return;
+      }
 
       // 2. Decode raw photo dimensions to get exact natural aspect ratio
       final codec = await ui.instantiateImageCodec(rawBytes);
@@ -795,20 +1067,47 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
         throw Exception('Compositing render boundary not ready.');
       }
 
-      final ui.Image compositedUiImage =
-          await boundary.toImage(pixelRatio: 2.5);
-      final byteData = await compositedUiImage.toByteData(
-          format: ui.ImageByteFormat.png);
+      final double captureRatio = _compressImages
+          ? MediaQuery.devicePixelRatioOf(context).clamp(1.5, 2.5)
+          : MediaQuery.devicePixelRatioOf(context).clamp(2.5, 3.5);
+      final int jpegQuality = _compressImages ? 88 : 98;
+
+      final ui.Image image = await boundary.toImage(pixelRatio: captureRatio);
+      final ByteData? byteData =
+          await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
 
       if (byteData == null) {
         throw Exception('Failed to generate PNG byte data.');
       }
 
-      final pngBytes = byteData.buffer.asUint8List();
+      final Uint8List jpegBytes = await FlutterImageCompress.compressWithList(
+        byteData.buffer.asUint8List(),
+        quality: jpegQuality,
+        format: CompressFormat.jpeg,
+      );
 
-      // 5. Save composited image into gallery using Gal
-      final savedFile =
-          await MediaStorageService.saveCompositedImage(pngBytes);
+      // 5. Save composited image into gallery with true EXIF metadata
+      final savedFile = await MediaStorageService.saveStampedPhoto(
+        jpegBytes,
+        latitude: _currentPosition?.latitude ??
+            (_snapLat != 0.0 ? _snapLat : null),
+        longitude: _currentPosition?.longitude ??
+            (_snapLng != 0.0 ? _snapLng : null),
+        altitude: _currentPosition?.altitude ??
+            (_snapAltitude != 0.0 ? _snapAltitude : null),
+        heading: _heading ?? _snapHeading,
+        metadata: {
+          'timestamp': _snapTime.toIso8601String(),
+          'address': _snapAddress,
+          'lat': _snapLat,
+          'lng': _snapLng,
+          'altitude': '$_snapAltitude m',
+          'heading': _snapHeading,
+          'personName': widget.settings.personName,
+          'customNote': widget.settings.customNote,
+        },
+      );
 
       // Clean up temporary camera cache file
       try {
@@ -1068,6 +1367,10 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                           Positioned.fill(
                             child: CameraGridOverlay(gridMode: _gridMode),
                           ),
+                          Positioned.fill(
+                            child:
+                                HorizonLevelOverlay(enabled: _showHorizonLevel),
+                          ),
                           // 64x64 rounded focus square at tapped spot
                           if (_focusPoint != null)
                             Positioned(
@@ -1237,6 +1540,8 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                               ),
                             );
                             await _loadGridMode();
+                            await _loadHorizonLevel();
+                            await _loadCompressionSetting();
                           },
                         ),
                       ],
@@ -1258,9 +1563,25 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
               mainAxisSize: MainAxisSize.min,
               children: [
                 // Compact translucent quick-zoom pill bar (with 6px bottom margin)
-                if (canShowPreview && _maxZoom > 1.0)
+                if (canShowPreview &&
+                    (_maxZoom > 1.0 ||
+                        _minZoom < 1.0 ||
+                        (_ultraWideBackCamera != null &&
+                            _cameraController?.description.lensDirection ==
+                                CameraLensDirection.back)))
                   Builder(
                     builder: (context) {
+                      final bool isRearCamera = _cameraController != null &&
+                          _cameraController!.description.lensDirection ==
+                              CameraLensDirection.back;
+                      final bool showUltraWidePill = isRearCamera &&
+                          (_minZoom < 1.0 || _ultraWideBackCamera != null);
+                      final String ultraWideLabel = _minZoom < 1.0
+                          ? '${_minZoom.toStringAsFixed(1)}x'
+                          : '0.5x';
+                      final bool isUltraWideActive =
+                          _isUsingUltraWide || _currentZoom < 0.95;
+
                       final presets = [1.0, 2.0, 3.0, 5.0]
                           .where((z) => z <= _maxZoom || z == 1.0)
                           .toList();
@@ -1275,46 +1596,65 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
-                          children: presets.map((preset) {
-                            final bool isActive =
-                                (_currentZoom - preset).abs() < 0.25;
-                            return GestureDetector(
-                              onTap: () async {
-                                setState(() {
-                                  _currentZoom = preset;
-                                });
-                                try {
-                                  await _cameraController?.setZoomLevel(preset);
-                                } catch (e) {
-                                  debugPrint('Error setting zoom: $e');
-                                }
-                              },
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: isActive
-                                      ? Colors.black54
-                                      : Colors.transparent,
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                                child: Text(
-                                  isActive
-                                      ? '${_currentZoom.toStringAsFixed(1)}x'
-                                      : '${preset.toStringAsFixed(1)}x',
-                                  style: TextStyle(
-                                    color: isActive
-                                        ? Colors.amberAccent
-                                        : Colors.white,
-                                    fontSize: 12,
-                                    fontWeight: isActive
-                                        ? FontWeight.bold
-                                        : FontWeight.w500,
+                          children: [
+                            if (showUltraWidePill)
+                              GestureDetector(
+                                onTap: _onUltraWideTapped,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: isUltraWideActive
+                                        ? Colors.black54
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Text(
+                                    ultraWideLabel,
+                                    style: TextStyle(
+                                      color: isUltraWideActive
+                                          ? Colors.amberAccent
+                                          : Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: isUltraWideActive
+                                          ? FontWeight.bold
+                                          : FontWeight.w500,
+                                    ),
                                   ),
                                 ),
                               ),
-                            );
-                          }).toList(),
+                            ...presets.map((preset) {
+                              final bool isActive = !_isUsingUltraWide &&
+                                  (_currentZoom - preset).abs() < 0.25;
+                              return GestureDetector(
+                                onTap: () => _onStandardZoomTapped(preset),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: isActive
+                                        ? Colors.black54
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Text(
+                                    isActive
+                                        ? '${_currentZoom.toStringAsFixed(1)}x'
+                                        : '${preset.toStringAsFixed(1)}x',
+                                    style: TextStyle(
+                                      color: isActive
+                                          ? Colors.amberAccent
+                                          : Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: isActive
+                                          ? FontWeight.bold
+                                          : FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }),
+                          ],
                         ),
                       );
                     },
@@ -1331,10 +1671,14 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                     address: _currentAddress,
                     formattedDateTime: liveFormattedDateTime,
                     magneticField: _smoothedMagneticField,
-                    heading: _heading,
+                    heading: _heading ?? 0.0,
                     cardinalDirection: _cardinalDirection,
                     showTelemetry: _showTelemetry,
                     settings: widget.settings,
+                    lastGpsFixTime: _lastGpsFixTime,
+                    isRefreshingGps: _isRefreshingGps,
+                    onRefreshGps: _forceRefreshGps,
+                    mapController: _mapController,
                   ),
                 ),
               ],
@@ -1521,7 +1865,7 @@ class _GPSCameraScreenState extends State<GPSCameraScreen>
                           formattedDateTime:
                               _getFormattedTimestamp(_snapTime),
                           magneticField: _snapMagnetic,
-                          heading: _snapHeading,
+                          heading: _snapHeading ?? 0.0,
                           cardinalDirection: _snapCardinal,
                           showTelemetry: _snapTelemetry,
                           settings: widget.settings,

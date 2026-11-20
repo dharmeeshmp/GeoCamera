@@ -23,6 +23,8 @@ class AppSettings extends ChangeNotifier {
   bool _captureSound = true;
   bool _saveOriginal = false;
   String _cameraGridMode = 'off';
+  bool _showHorizonLevel = true;
+  bool _compressImages = true;
 
   // Picture Settings
   String _mapType = 'Normal';
@@ -54,6 +56,8 @@ class AppSettings extends ChangeNotifier {
   bool get captureSound => _captureSound;
   bool get saveOriginal => _saveOriginal;
   String get cameraGridMode => _cameraGridMode;
+  bool get showHorizonLevel => _showHorizonLevel;
+  bool get compressImages => _compressImages;
 
   String get mapType => _mapType;
   MapStyle get mapStyle => _mapStyle;
@@ -125,6 +129,8 @@ class AppSettings extends ChangeNotifier {
     bool? captureSound,
     bool? saveOriginal,
     String? cameraGridMode,
+    bool? showHorizonLevel,
+    bool? compressImages,
     String? mapType,
     MapStyle? mapStyle,
     String? customNote,
@@ -157,6 +163,8 @@ class AppSettings extends ChangeNotifier {
     if (captureSound != null) _captureSound = captureSound;
     if (saveOriginal != null) _saveOriginal = saveOriginal;
     if (cameraGridMode != null) _cameraGridMode = cameraGridMode;
+    if (showHorizonLevel != null) _showHorizonLevel = showHorizonLevel;
+    if (compressImages != null) _compressImages = compressImages;
 
     if (mapType != null) {
       _mapType = mapType;
@@ -222,6 +230,8 @@ class AppSettings extends ChangeNotifier {
       settings._captureSound = prefs.getBool('capture_sound') ?? true;
       settings._saveOriginal = prefs.getBool('save_original') ?? false;
       settings._cameraGridMode = prefs.getString('camera_grid_mode') ?? 'off';
+      settings._showHorizonLevel = prefs.getBool('show_horizon_level') ?? true;
+      settings._compressImages = prefs.getBool('compress_images') ?? true;
 
       settings._mapType = prefs.getString('map_type') ?? 'Normal';
       final mapStyleIndex = prefs.getInt('map_style') ?? 0;
@@ -263,6 +273,8 @@ class AppSettings extends ChangeNotifier {
       await prefs.setBool('capture_sound', _captureSound);
       await prefs.setBool('save_original', _saveOriginal);
       await prefs.setString('camera_grid_mode', _cameraGridMode);
+      await prefs.setBool('show_horizon_level', _showHorizonLevel);
+      await prefs.setBool('compress_images', _compressImages);
 
       await prefs.setString('map_type', _mapType);
       await prefs.setInt('map_style', _mapStyle.index);
